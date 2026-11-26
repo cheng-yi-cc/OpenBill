@@ -2,16 +2,20 @@ package services
 
 import (
 	"fmt"
+	"github.com/mayswind/ezbookkeeping/pkg/localbackup"
 	"github.com/mayswind/ezbookkeeping/pkg/marketquotes"
 	"github.com/mayswind/ezbookkeeping/pkg/models"
 	"github.com/mayswind/ezbookkeeping/pkg/utils"
 	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"xorm.io/xorm"
 )
 
 func monetaryFixture(t *testing.T) (*investmentDBFixture, *models.MonetaryIncomeBinding) {
@@ -104,6 +108,111 @@ func TestMonetarySQLiteAtomicIncomeBalanceIdempotenceAndDeletion(t *testing.T) {
 	require.Zero(t, n)
 	require.Equal(t, int64(2000000), f.balance())
 	require.Equal(t, int64(1), f.count(&models.MonetaryIncomeDay{}))
+}
+
+func TestFixedDepositCannotRewriteSettledMonetaryPrincipal(t *testing.T) {
+	f, b := monetaryFixture(t)
+	deposit, err := f.s.SaveFixedDeposit(nil, f.uid, models.FixedDeposit{AccountId: "0" + fmt.Sprint(f.bankID), BookId: DefaultBookID(f.uid), CategoryId: "9101", Principal: "1000", AnnualRate: "2", StartDate: "2026-09-28", Term: 2, Unit: "month", TimeZone: "Asia/Shanghai"})
+	require.NoError(t, err)
+	require.Equal(t, fmt.Sprint(f.bankID), deposit.AccountId)
+	created, err := MonetaryIncome.settleDay(nil, f.uid, b.Id, b.NextDate, "1")
+	require.NoError(t, err)
+	require.Equal(t, 1, created)
+	var day models.MonetaryIncomeDay
+	has, err := f.engine.Where("uid=?", f.uid).Get(&day)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.Equal(t, "19000.00", day.Principal)
+	beforeBalance := f.balance()
+	changed := *deposit
+	changed.Principal = "1200"
+	_, err = f.s.SaveFixedDeposit(nil, f.uid, changed)
+	require.Error(t, err)
+	changed = *deposit
+	changed.StartDate = "2026-09-30"
+	_, err = f.s.SaveFixedDeposit(nil, f.uid, changed)
+	require.Error(t, err)
+	_, err = f.engine.Insert(&models.Account{AccountId: 2002, Uid: f.uid, Name: "other", Type: 1, Category: 2, Currency: "CNY"})
+	require.NoError(t, err)
+	changed = *deposit
+	changed.AccountId = "2002"
+	_, err = f.s.SaveFixedDeposit(nil, f.uid, changed)
+	require.Error(t, err)
+	changed = *deposit
+	changed.Id = ""
+	_, err = f.s.SaveFixedDeposit(nil, f.uid, changed)
+	require.Error(t, err)
+	changed.StartDate = "2026-09-30"
+	_, err = f.s.SaveFixedDeposit(nil, f.uid, changed)
+	require.NoError(t, err)
+	changed = *deposit
+	changed.Note = "更新备注"
+	changed.AnnualRate = "3"
+	_, err = f.s.SaveFixedDeposit(nil, f.uid, changed)
+	require.NoError(t, err)
+	var unchanged models.MonetaryIncomeDay
+	has, err = f.engine.ID(day.Id).Get(&unchanged)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.Equal(t, day, unchanged)
+	require.Equal(t, beforeBalance, f.balance())
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "cyledger.ini"), []byte("[database]\ntype=sqlite3\n"), 0600))
+	archive := filepath.Join(t.TempDir(), "deposit-monetary.zip")
+	require.NoError(t, localbackup.Create(root, archive, []byte(`{}`), func(target string) error {
+		_, e := f.engine.Exec("VACUUM INTO ?", target)
+		return e
+	}))
+	stage, err := localbackup.Stage(archive, t.TempDir())
+	require.NoError(t, err)
+	restored, err := xorm.NewEngine("sqlite3", filepath.Join(stage, "data", "cyledger.db"))
+	require.NoError(t, err)
+	defer restored.Close()
+	sess := restored.NewSession()
+	defer sess.Close()
+	var restoredDeposit models.FixedDeposit
+	has, err = sess.ID(deposit.Id).Get(&restoredDeposit)
+	require.NoError(t, err)
+	require.True(t, has)
+	changed = restoredDeposit
+	changed.Principal = "1200"
+	require.Error(t, guardDepositMonetaryHistory(sess, f.uid, &restoredDeposit, &changed))
+	changed = restoredDeposit
+	changed.Closed = true
+	changed.ClosedDate = day.Date
+	require.Error(t, guardDepositMonetaryHistory(sess, f.uid, &restoredDeposit, &changed))
+	changed.ClosedDate = "2026-09-30"
+	require.NoError(t, guardDepositMonetaryHistory(sess, f.uid, &restoredDeposit, &changed))
+}
+
+func TestFixedDepositEditRacingMonetarySettlement(t *testing.T) {
+	f, b := monetaryFixture(t)
+	deposit, err := f.s.SaveFixedDeposit(nil, f.uid, models.FixedDeposit{AccountId: fmt.Sprint(f.bankID), BookId: DefaultBookID(f.uid), CategoryId: "9101", Principal: "1000", AnnualRate: "2", StartDate: "2026-09-28", Term: 2, Unit: "month", TimeZone: "Asia/Shanghai"})
+	require.NoError(t, err)
+	changed := *deposit
+	changed.Principal = "1200"
+	var editErr, settleErr error
+	var group sync.WaitGroup
+	group.Add(2)
+	go func() { defer group.Done(); _, editErr = f.s.SaveFixedDeposit(nil, f.uid, changed) }()
+	go func() { defer group.Done(); _, settleErr = MonetaryIncome.settleDay(nil, f.uid, b.Id, b.NextDate, "1") }()
+	group.Wait()
+	require.NoError(t, settleErr)
+	var stored models.FixedDeposit
+	has, err := f.engine.ID(deposit.Id).Get(&stored)
+	require.NoError(t, err)
+	require.True(t, has)
+	var day models.MonetaryIncomeDay
+	has, err = f.engine.Where("uid=?", f.uid).Get(&day)
+	require.NoError(t, err)
+	require.True(t, has)
+	if editErr == nil {
+		require.Equal(t, "1200.00", stored.Principal)
+		require.Equal(t, "18800.00", day.Principal)
+	} else {
+		require.Equal(t, "1000.00", stored.Principal)
+		require.Equal(t, "19000.00", day.Principal)
+	}
 }
 
 func TestMonetarySQLiteFailureRollsBackAndCannotUseOtherUser(t *testing.T) {
@@ -234,4 +343,43 @@ func TestMonetarySimpleBindingDefaultsBackdatesOpeningAndRebindsWithoutDuplicate
 	_, err = f.engine.ID(day.TransactionId).Get(&tx)
 	require.NoError(t, err)
 	require.True(t, tx.ExcludeFromStatistics)
+}
+
+func TestFullClearRetainsMonetaryDayIdentity(t *testing.T) {
+	f, binding := monetaryFixture(t)
+	require.NoError(t, f.engine.Sync2(&models.TransactionTagGroup{}, &models.UserCustomIcon{}, &models.UserCustomExchangeRate{}, &models.InsightsExplorer{}))
+	created, err := MonetaryIncome.settleDay(nil, f.uid, binding.Id, binding.NextDate, "1")
+	require.NoError(t, err)
+	require.Equal(t, 1, created)
+	dayID := fmt.Sprintf("%d:%d:%s", f.uid, f.bankID, binding.NextDate)
+	other := &models.MonetaryIncomeDay{Id: "other-clear-day", Uid: f.uid + 1, AccountId: 100, Date: "2026-09-29", Code: "000198", Principal: "1", PerTenThousand: "1", Amount: "0"}
+	_, err = f.engine.Insert(other)
+	require.NoError(t, err)
+	_, err = f.engine.Insert(&models.CalendarEvent{Id: "monetary-clear-event", Uid: f.uid, BookId: "book", Date: "2026-11-09", Kind: "manual"})
+	require.NoError(t, err)
+	_, err = f.engine.Exec(`CREATE TRIGGER reject_monetary_clear BEFORE DELETE ON calendar_event BEGIN SELECT RAISE(ABORT, 'test late failure'); END`)
+	require.NoError(t, err)
+	require.Error(t, Transactions.ClearAllUserData(nil, f.uid))
+	var originalBinding models.MonetaryIncomeBinding
+	has, err := f.engine.ID(binding.Id).Get(&originalBinding)
+	require.NoError(t, err)
+	require.True(t, has, "late failure must roll back binding deletion")
+	require.True(t, originalBinding.Enabled)
+	require.Equal(t, int64(2000200), f.balance())
+	_, err = f.engine.Exec(`DROP TRIGGER reject_monetary_clear`)
+	require.NoError(t, err)
+	require.NoError(t, Transactions.ClearAllUserData(nil, f.uid))
+	var day models.MonetaryIncomeDay
+	has, err = f.engine.ID(dayID).Get(&day)
+	require.NoError(t, err)
+	require.True(t, has, "clearing must preserve the processed-day identity")
+	require.NotZero(t, day.TransactionId)
+	var tx models.Transaction
+	has, err = f.engine.ID(day.TransactionId).Get(&tx)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.True(t, tx.Deleted)
+	has, err = f.engine.ID(other.Id).Exist(&models.MonetaryIncomeDay{})
+	require.NoError(t, err)
+	require.True(t, has)
 }

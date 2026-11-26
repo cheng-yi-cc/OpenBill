@@ -34,7 +34,7 @@ public final class ReminderReceiver extends BroadcastReceiver {
             if (items.length() > 1000) return;
             for (int i = 0; i < items.length(); i++) {
                 JSONObject item = items.getJSONObject(i);
-                if (item.getString("id").length() > 80 || item.getString("title").length() > 80 || item.getString("text").length() > 300 || item.getLong("at") <= 0) return;
+                if (item.getString("id").length() > 80 || item.getString("title").length() > 80 || item.getString("text").length() > 300 || item.optString("route", "").length() > 120 || item.getLong("at") <= 0) return;
             }
             AlarmManager manager = context.getSystemService(AlarmManager.class);
             JSONArray old = stored(context);
@@ -54,7 +54,7 @@ public final class ReminderReceiver extends BroadcastReceiver {
         } catch (Exception ignored) { }
     }
     @Override public void onReceive(Context context, Intent intent) {
-        if (Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction()) || Intent.ACTION_MY_PACKAGE_REPLACED.equals(intent.getAction()) || Intent.ACTION_TIME_CHANGED.equals(intent.getAction())) {
+        if (Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction()) || Intent.ACTION_MY_PACKAGE_REPLACED.equals(intent.getAction()) || Intent.ACTION_TIME_CHANGED.equals(intent.getAction()) || Intent.ACTION_TIMEZONE_CHANGED.equals(intent.getAction())) {
             reschedule(context);return;
         }
         if (!"com.cyledger.android.DUE".equals(intent.getAction())) return;
@@ -67,9 +67,15 @@ public final class ReminderReceiver extends BroadcastReceiver {
                 NotificationManager manager = context.getSystemService(NotificationManager.class);
                 if (!manager.areNotificationsEnabled()) return;
                 manager.createNotificationChannel(new NotificationChannel(CHANNEL, "还款与定存到期", NotificationManager.IMPORTANCE_DEFAULT));
-                Intent open = new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-                PendingIntent content = PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-                Notification notification = new Notification.Builder(context, CHANNEL).setSmallIcon(android.R.drawable.ic_dialog_info)
+                String route = DcaNotifier.safeRoute(item.optString("route", ""));
+                Intent open = new Intent(context, MainActivity.class)
+                    .setData(Uri.parse("cyledger://due/" + Uri.encode(id)))
+                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                if (!route.isEmpty()) open.putExtra("openRoute", route);
+                PendingIntent content = PendingIntent.getActivity(context, id.hashCode(), open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                int iconRes = context.getResources().getIdentifier("ic_stat_openbill", "drawable", context.getPackageName());
+                if (iconRes == 0) iconRes = android.R.drawable.ic_dialog_info;
+                Notification notification = new Notification.Builder(context, CHANNEL).setSmallIcon(iconRes).setColor(0xFF12786F)
                     .setContentTitle(item.getString("title")).setContentText(item.getString("text")).setStyle(new Notification.BigTextStyle().bigText(item.getString("text")))
                     .setVisibility(Notification.VISIBILITY_PRIVATE).setAutoCancel(true).setContentIntent(content).build();
                 manager.notify(id, 0, notification);

@@ -22,7 +22,13 @@ export const useLedgerExperienceStore = defineStore('ledgerExperience', () => {
     }
     watch(() => users.currentUserBasicInfo?.username, load, { immediate: true, flush: 'sync' });
     watch([preferences, history, lastAccountId], () => {
-        if (!loading) localStorage.setItem(key(), JSON.stringify({ preferences: preferences.value, history: history.value, lastAccountId: lastAccountId.value }));
+        if (!loading) {
+            try {
+                localStorage.setItem(key(), JSON.stringify({ preferences: preferences.value, history: history.value, lastAccountId: lastAccountId.value }));
+            } catch {
+                /* Ignore storage quota or privacy-mode write failures. */
+            }
+        }
     }, { deep: true, flush: 'sync' });
     function set<K extends keyof LedgerPreferences>(name: K, value: LedgerPreferences[K]) { preferences.value = parseLedgerPreferences({ ...preferences.value, [name]: value }); }
     function rememberSearch(value: string) { const query = value.trim().slice(0, 255); if (query) history.value = [query, ...history.value.filter(item => item !== query)].slice(0, 30); }

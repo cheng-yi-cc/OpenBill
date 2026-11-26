@@ -17,16 +17,51 @@
             </f7-searchbar>
             <div class="right">
                 <f7-button round fill icon-f7="checkmark_alt" :aria-label="tt('Save')" @click="save"
-                           v-if="filteredTagsWithGroupHeader && filteredTagsWithGroupHeader.length > 0"></f7-button>
+                           v-if="!newTag && filteredTagsWithGroupHeader && filteredTagsWithGroupHeader.length > 0"></f7-button>
                 <f7-link icon-f7="plus" :class="{'disabled': newTag}" :aria-label="tt('Add')" @click="addNewTag"
-                         v-if="!filteredTagsWithGroupHeader || filteredTagsWithGroupHeader.length < 1"></f7-link>
+                         v-if="!newTag && (!filteredTagsWithGroupHeader || filteredTagsWithGroupHeader.length < 1)"></f7-link>
             </div>
         </f7-toolbar>
         <f7-page-content :class="'margin-top ' + heightClass">
-            <f7-list class="no-margin-top no-margin-bottom" v-if="(!filteredTagsWithGroupHeader || filteredTagsWithGroupHeader.length < 1) && !newTag">
+            <f7-list class="no-margin-top no-margin-bottom" v-if="allowAddNewTag && quickCreateName && !newTag">
+                <f7-list-item link="#" no-chevron :title="`创建并选用「${quickCreateName}」`" @click="quickCreateTag">
+                    <template #media><f7-icon f7="plus_circle_fill" color="primary" /></template>
+                </f7-list-item>
+            </f7-list>
+            <f7-list v-if="allowAddNewTag && newTag" class="no-margin-top no-margin-bottom">
+                <f7-list-item class="editing-list-item">
+                    <template #media><f7-icon class="transaction-tag-icon" f7="number"></f7-icon></template>
+                    <template #title>
+                        <div class="display-flex">
+                            <f7-input class="list-title-input padding-inline-start-half"
+                                      type="text"
+                                      :placeholder="tt('Tag Title')"
+                                      v-model:value="newTag.name"
+                                      @keyup.enter="saveNewTag()">
+                            </f7-input>
+                        </div>
+                    </template>
+                    <template #after>
+                        <f7-button raised fill icon-f7="checkmark_alt" color="blue"
+                                   :class="{ 'no-padding': true, 'disabled': !newTag || !newTag.name.trim() }"
+                                   :aria-label="tt('Save')"
+                                   @click="saveNewTag()">
+                        </f7-button>
+                        <f7-button raised fill icon-f7="xmark" color="gray"
+                                   class="no-padding margin-inline-start-half"
+                                   :aria-label="tt('Cancel')"
+                                   @click="cancelSaveNewTag()">
+                        </f7-button>
+                    </template>
+                </f7-list-item>
+                <f7-list-item>
+                    <label class="cy-tag-parent-field">上级标签 <select v-model="newTag.parentId" aria-label="新标签的上级标签"><option value="0">无（一级标签）</option><option v-for="parent in parentTags" :key="parent.id" :value="parent.id">{{ parent.name }}</option></select></label>
+                </f7-list-item>
+            </f7-list>
+            <f7-list class="no-margin-top no-margin-bottom" v-if="(!filteredTagsWithGroupHeader || filteredTagsWithGroupHeader.length < 1) && !newTag && !quickCreateName">
                 <f7-list-item :title="tt('No available tag')"></f7-list-item>
             </f7-list>
-            <f7-list dividers class="no-margin-top no-margin-bottom tag-selection-list" v-else-if="(filteredTagsWithGroupHeader && filteredTagsWithGroupHeader.length > 0) || newTag">
+            <f7-list dividers class="no-margin-top no-margin-bottom tag-selection-list" v-else-if="filteredTagsWithGroupHeader && filteredTagsWithGroupHeader.length > 0">
                 <template :key="(tag instanceof TransactionTag) ? tag.id : (tag.type === 'subheader' ? `${tag.type}-${index}-${tag.title}` : `${tag.type}-${index}`)"
                           v-for="(tag, index) in filteredTagsWithGroupHeader">
                     <f7-list-item group-title v-if="!(tag instanceof TransactionTag) && tag.type === 'subheader'">
@@ -39,33 +74,6 @@
                                       :title="tt('Add new tag')"
                                       v-if="allowAddNewTag && !newTag"
                                       @click="addNewTag()">
-                        </f7-list-item>
-                        <f7-list-item class="editing-list-item" checkbox indeterminate disabled v-if="allowAddNewTag && newTag">
-                            <template #media>
-                                <f7-icon class="transaction-tag-icon" f7="number"></f7-icon>
-                            </template>
-                            <template #title>
-                                <div class="display-flex">
-                                    <f7-input class="list-title-input padding-inline-start-half"
-                                              type="text"
-                                              :placeholder="tt('Tag Title')"
-                                              v-model:value="newTag.name"
-                                              @keyup.enter="saveNewTag()">
-                                    </f7-input>
-                                </div>
-                            </template>
-                            <template #after>
-                                <f7-button raised fill icon-f7="checkmark_alt" color="blue"
-                                           :class="{ 'no-padding': true, 'disabled': !newTag || !newTag.name }"
-                                           :aria-label="tt('Save')"
-                                           @click="saveNewTag()">
-                                </f7-button>
-                                <f7-button raised fill icon-f7="xmark" color="gray"
-                                           class="no-padding margin-inline-start-half"
-                                           :aria-label="tt('Cancel')"
-                                           @click="cancelSaveNewTag()">
-                                </f7-button>
-                            </template>
                         </f7-list-item>
                     </template>
                     <f7-list-item checkbox
@@ -92,7 +100,6 @@
                     </f7-list-item>
                 </template>
             </f7-list>
-            <f7-list v-if="newTag"><f7-list-item><label>上级标签 <select v-model="newTag.parentId" aria-label="新标签的上级标签"><option value="0">无（一级标签）</option><option v-for="parent in parentTags" :key="parent.id" :value="parent.id">{{ parent.name }}</option></select></label></f7-list-item></f7-list>
         </f7-page-content>
     </f7-sheet>
 </template>
@@ -136,6 +143,12 @@ const {
 
 const transactionTagsStore = useTransactionTagsStore();
 const parentTags = computed(() => Object.values(transactionTagsStore.allTransactionTagsMap).filter(tag => (!tag.parentId || tag.parentId === '0') && !tag.hidden));
+const quickCreateName = computed(() => {
+    const keyword = tagSearchContent.value.trim();
+    if (!keyword) return '';
+    const exists = Object.values(transactionTagsStore.allTransactionTagsMap).some(tag => !tag.hidden && tag.name.toLocaleLowerCase() === keyword.toLocaleLowerCase());
+    return exists ? '' : keyword;
+});
 
 const sheet = useTemplateRef<Sheet.Sheet>('sheet');
 const searchbar = useTemplateRef<Searchbar.Searchbar>('searchbar');
@@ -175,7 +188,18 @@ function save(): void {
 }
 
 function addNewTag(): void {
-    newTag.value = TransactionTag.createNewTag();
+    const created = TransactionTag.createNewTag();
+    if (tagSearchContent.value.trim()) created.name = tagSearchContent.value.trim();
+    newTag.value = created;
+}
+
+function quickCreateTag(): void {
+    const name = quickCreateName.value;
+    if (!name) return;
+    const created = TransactionTag.createNewTag();
+    created.name = name;
+    newTag.value = created;
+    saveNewTag();
 }
 
 function saveNewTag(): void {
@@ -192,7 +216,10 @@ function saveNewTag(): void {
         newTag.value = null;
 
         if (tag && tag.id) {
-            clonedModelValue.value.push(tag.id);
+            if (!clonedModelValue.value.includes(tag.id)) clonedModelValue.value.push(tag.id);
+            tagSearchContent.value = '';
+            searchbar.value?.clear();
+            showToast(`已创建并选用「${tag.name}」`);
         }
     }).catch(error => {
         hideLoading();

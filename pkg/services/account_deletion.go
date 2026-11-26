@@ -174,6 +174,15 @@ func (s *InvestmentService) DeleteAssetAccount(c core.Context, uid int64, input 
 				selected[tx.TransactionId] = true
 			}
 		}
+		if len(selected) > 0 {
+			ids := make([]int64, 0, len(selected))
+			for id := range selected {
+				ids = append(ids, id)
+			}
+			if err := guardRefundTransactions(sess, uid, ids); err != nil {
+				return err
+			}
+		}
 		var txs []models.Transaction
 		for _, tx := range allTx {
 			if selected[tx.TransactionId] {
@@ -309,10 +318,17 @@ func (s *InvestmentService) DeleteAssetAccount(c core.Context, uid int64, input 
 			return investmentError("账户或关联记录已变化，请重新查看删除影响后确认")
 		}
 		if _, err := replayInvestments(events); err != nil {
-			result.BlockedReason = "删除会使其他账户的投资持仓无法重算，请先处理关联投资记录：" + err.Error()
+			result.BlockedReason = "删除会使其他账户的投资持仓无法重算，请先处理关联投资记录：" + localizeReplayError(sess, uid, err)
 		}
 		balances := map[int64]*big.Int{}
 		for _, tx := range txs {
+			if err := guardMonetaryFlowHistory(sess, uid, &tx, nil, targets); err != nil {
+				if err == ErrMonetaryFlowHistory {
+					result.BlockedReason = "删除会影响关联账户已处理的货币基金收益，请保留相关流水"
+				} else {
+					return err
+				}
+			}
 			if balances[tx.AccountId] == nil {
 				balances[tx.AccountId] = new(big.Int)
 			}

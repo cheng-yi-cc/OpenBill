@@ -17,6 +17,8 @@ import type { ColorValue } from '@/core/color.ts';
 import { IconType } from '@/core/icon.ts';
 import type { CategoricalChartSourceDataItem, TrendsChartSourceDataItem } from '@/core/chart.ts';
 import { CategoryType } from '@/core/category.ts';
+import { AccountCategory } from '@/core/account.ts';
+import { Account } from '@/models/account.ts';
 import { TransactionRelatedAccountType } from '@/core/transaction.ts';
 import {
     StatisticsAnalysisType,
@@ -1137,10 +1139,18 @@ export const useStatisticsStore = defineStore('statistics', () => {
                 relatedAccountId: dataItem.relatedAccountId,
                 relatedAccountType: dataItem.relatedAccountType,
                 amount: dataItem.amount,
+                currency: dataItem.currency,
+                unassigned: dataItem.unassigned,
                 amountInDefaultCurrency: null
             };
 
-            if (item.accountId) {
+            if (item.unassigned && item.currency) {
+                const reportingAccount = Account.createNewAccount(AccountCategory.VirtualAccount, item.currency, 0);
+                reportingAccount.id = 'refund_unassigned';
+                reportingAccount.name = '无账户';
+                reportingAccount.parentId = '0';
+                item.account = reportingAccount;
+            } else if (item.accountId) {
                 item.account = accountsStore.allAccountsMap[item.accountId];
             }
 
@@ -1170,7 +1180,9 @@ export const useStatisticsStore = defineStore('statistics', () => {
                 item.primaryCategory = item.category;
             }
 
-            if (item.account && item.account.currency !== defaultCurrency) {
+            if (item.unassigned && item.account?.currency !== defaultCurrency) {
+                item.amountInDefaultCurrency = null;
+            } else if (item.account && item.account.currency !== defaultCurrency) {
                 const amount = exchangeRatesStore.getExchangedAmount(parseBigDecimal(item.amount), item.account.currency, defaultCurrency);
 
                 if (amount) {

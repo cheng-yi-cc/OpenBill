@@ -17,6 +17,8 @@ import (
 )
 
 var cryptoPlatforms = map[string]string{
+	"gate": "EXCHANGE", "kucoin": "EXCHANGE", "htx": "EXCHANGE", "mexc": "EXCHANGE", "crypto-com": "EXCHANGE", "gemini": "EXCHANGE", "other-exchange": "EXCHANGE",
+	"okx-wallet": "WALLET", "imtoken": "WALLET", "tokenpocket": "WALLET", "onekey": "WALLET", "exodus": "WALLET", "safe": "WALLET",
 	"binance": "EXCHANGE", "okx": "EXCHANGE", "coinbase": "EXCHANGE", "kraken": "EXCHANGE", "bybit": "EXCHANGE", "bitget": "EXCHANGE",
 	"bitget-wallet": "WALLET", "metamask": "WALLET", "trust": "WALLET", "phantom": "WALLET", "rabby": "WALLET", "ledger": "WALLET", "trezor": "WALLET",
 }
@@ -29,17 +31,30 @@ func validCryptoPlatform(kind, platform string) bool {
 }
 
 type CryptoHoldingInput struct {
-	InstrumentID string `json:"instrumentId"`
-	Quantity     string `json:"quantity"`
+	InstrumentID     string  `json:"instrumentId"`
+	Quantity         string  `json:"quantity"`
+	Cost             *string `json:"cost,omitempty"` // Total cost in the account currency; nil remains unknown.
+	CostExchangeRate string  `json:"costExchangeRate,omitempty"`
 }
 type CryptoAccountInput struct {
-	Currency           string               `json:"currency,omitempty"`
-	PaymentInstruments []string             `json:"paymentInstruments,omitempty"`
-	Name               string               `json:"name"`
-	Kind               string               `json:"kind"`
-	Platform           string               `json:"platform"`
-	BookID             string               `json:"bookId"`
-	Holdings           []CryptoHoldingInput `json:"holdings"`
+	Currency           string                `json:"currency,omitempty"`
+	PaymentInstruments []string              `json:"paymentInstruments,omitempty"`
+	Name               string                `json:"name"`
+	Kind               string                `json:"kind"`
+	Platform           string                `json:"platform"`
+	BookID             string                `json:"bookId"`
+	Holdings           []CryptoHoldingInput  `json:"holdings"`
+	DCAPlans           []CryptoDCASetupInput `json:"dcaPlans,omitempty"`
+}
+
+// Setup plans use the new account and its opening book, sharing its atomic request.
+type CryptoDCASetupInput struct {
+	InstrumentID        string `json:"instrumentId"`
+	PaymentInstrumentID string `json:"paymentInstrumentId"`
+	Amount              string `json:"amount"`
+	DailyTime           string `json:"dailyTime"`
+	StartDate           string `json:"startDate"`
+	TimeZone            string `json:"timeZone"`
 }
 
 // UpdatePortfolioAccount edits account metadata without manufacturing or revising holdings.
@@ -127,7 +142,10 @@ func (s *InvestmentService) UpdatePortfolioAccount(c core.Context, uid int64, in
 // Empty/zero quantities select a coin without fabricating an opening transaction or cost.
 func (s *InvestmentService) CreateCryptoAccount(c core.Context, uid int64, input CryptoAccountInput, key string) (*models.PortfolioAccount, error) {
 	if uid <= 0 || len(key) < 8 || len(key) > 128 {
-		return nil, investmentError("请求缺少有效的 Idempotency-Key")
+		return nil, investmentError("页面状态已过期，请刷新后重试")
+	}
+	if len(input.DCAPlans) > 100 || (len(input.DCAPlans) > 0 && input.Kind != "EXCHANGE") {
+		return nil, investmentError("首次定投仅支持交易所账户，最多 100 条计划")
 	}
 	input.Name = strings.TrimSpace(input.Name)
 	if len([]rune(input.Name)) == 0 || len([]rune(input.Name)) > 64 || len(input.Holdings) > 100 || !validCryptoPlatform(input.Kind, input.Platform) || !validatePortfolioCurrency(input.Currency) {
@@ -196,7 +214,7 @@ func (s *InvestmentService) CreateCryptoAccount(c core.Context, uid int64, input
 		now := time.Now().Unix()
 		for _, h := range input.Holdings {
 			if h.Quantity == "" {
-				continue
+				h.Quantity = "0"
 			}
 			if err = investments.ValidateDecimal(h.Quantity); err != nil {
 				return investmentError("数量格式无效，最多支持 18 位小数")
@@ -205,10 +223,41 @@ func (s *InvestmentService) CreateCryptoAccount(c core.Context, uid int64, input
 			if q.IsNegative() {
 				return investmentError("持有数量不能为负数")
 			}
+			var cost *string
+			note := "录入已有加密货币持仓"
+			if h.Cost != nil {
+				if !q.IsPositive() {
+					return investmentError("填写持有成本时，持有数量必须大于零")
+				}
+				original, err := investmentDecimal(*h.Cost, "持有成本", true)
+				if err != nil {
+					return err
+				}
+				rate := decimal.NewFromInt(1)
+				if currency == "USD" {
+					rate, err = investmentDecimal(h.CostExchangeRate, "美元成本汇率", true)
+					if err != nil || !rate.IsPositive() {
+						return investmentError("请填写大于零的美元成本汇率")
+					}
+				} else if h.CostExchangeRate != "" && h.CostExchangeRate != "1" {
+					return investmentError("人民币成本汇率必须为 1")
+				}
+				converted := original.Mul(rate).Round(18).String()
+				if original.IsPositive() && converted == "0" {
+					return investmentError("折算后的成本小于支持的最小精度")
+				}
+				if investments.ValidateDecimal(converted) != nil {
+					return investmentError("折算后的持有成本超出支持范围")
+				}
+				cost = &converted
+				note += fmt.Sprintf("；录入总成本 %s %s，成本汇率 %s CNY/%s", original.String(), currency, rate.String(), currency)
+			} else if h.CostExchangeRate != "" {
+				return investmentError("请先填写持有成本，再填写成本汇率")
+			}
 			if q.IsZero() {
 				continue
 			}
-			event := InvestmentEvent{Event: investments.Event{ID: fmt.Sprintf("%020d-%s", time.Now().UnixNano(), investmentID()), Version: 1, Type: "OPENING", AccountID: result.Id, InstrumentID: h.InstrumentID, Quantity: q.String(), Amount: "0", Fee: "0", ExchangeRate: "1", OccurredAt: now, Note: "录入已有加密货币持仓"}, BookID: bookID}
+			event := InvestmentEvent{Event: investments.Event{ID: fmt.Sprintf("%020d-%s", time.Now().UnixNano(), investmentID()), Version: 1, Type: "OPENING", AccountID: result.Id, InstrumentID: h.InstrumentID, Quantity: q.String(), Cost: cost, Amount: "0", Fee: "0", ExchangeRate: "1", OccurredAt: now, Note: note}, BookID: bookID}
 			if err = s.validateEvent(sess, uid, &event); err != nil {
 				return err
 			}
@@ -222,7 +271,34 @@ func (s *InvestmentService) CreateCryptoAccount(c core.Context, uid int64, input
 			}
 		}
 		if _, err = replayInvestments(events); err != nil {
-			return investmentError(err.Error())
+			return investmentError(localizeReplayError(sess, uid, err))
+		}
+		if len(input.DCAPlans) > 0 {
+			count, err := sess.Where("uid=?", uid).Count(&models.CryptoDCAPlan{})
+			if err != nil {
+				return err
+			}
+			if count+int64(len(input.DCAPlans)) > 100 {
+				return investmentError("定投计划数量已达上限")
+			}
+			for _, draft := range input.DCAPlans {
+				if !seen[draft.InstrumentID] || !seen[draft.PaymentInstrumentID] {
+					return investmentError("请在持有币种中保留定投的买入和支付币种")
+				}
+				p, err := newCryptoDCAPlan(uid, models.CryptoDCASaveRequest{AccountId: result.Id, BookId: bookID, InstrumentId: draft.InstrumentID, PaymentInstrumentId: draft.PaymentInstrumentID, Amount: draft.Amount, DailyTime: draft.DailyTime, StartDate: draft.StartDate, TimeZone: draft.TimeZone})
+				if err != nil {
+					return err
+				}
+				zone, _ := time.LoadLocation(p.TimeZone)
+				if p.StartDate < time.Unix(now, 0).In(zone).Format("2006-01-02") {
+					return investmentError("新账户定投不能早于今天；已有买入请计入初始持仓")
+				}
+				p.Id = investmentID()
+				p.NextDate = cryptoDCAFutureDate(*p, time.Unix(now, 0))
+				if _, err = sess.Insert(p); err != nil {
+					return err
+				}
+			}
 		}
 		if err = InvalidateWealthSnapshots(sess, uid, now); err != nil {
 			return err

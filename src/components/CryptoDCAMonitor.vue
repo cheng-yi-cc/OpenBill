@@ -1,51 +1,128 @@
 <template>
-    <div v-if="visible.length" class="dca-notice-backdrop">
-        <section role="alertdialog" aria-modal="true" aria-labelledby="dca-notice-title" class="dca-notice" @keydown.esc="dismiss" @keydown.tab.prevent="dismissButton?.focus()">
-            <h2 id="dca-notice-title">定投余额提醒</h2>
-            <div v-for="alert in visible" :key="alert.accountId + alert.paymentInstrumentId">
-                <strong>{{ alert.accountName }} · {{ dcaSymbols[alert.paymentInstrumentId] }}</strong>
-                <p v-if="alert.paused">有定投因余额不足已自动暂停。补足后，请到该交易所账户的“每日定投”手动恢复，暂停期间不补买。</p>
-                <p v-else>余额不足以覆盖未来 3 天的定投，请及时补充稳定币。</p>
-                <p>当前 {{ alert.balance }} · 未来 3 天需要 {{ alert.required }} {{ dcaSymbols[alert.paymentInstrumentId] }}</p>
+    <aside v-if="visible.length" class="dca-banner" role="status" aria-live="polite" @keydown.esc="dismiss">
+        <header class="dca-banner-head">
+            <strong>定投余额提醒</strong>
+            <button type="button" class="dca-banner-close" aria-label="关闭提醒" @click="dismiss">知道了</button>
+        </header>
+        <div v-for="alert in visible" :key="alert.id" class="dca-banner-item">
+            <div class="dca-banner-copy">
+                <strong>{{ alert.heading }}</strong>
+                <p>{{ alert.detail }}</p>
             </div>
-            <button ref="dismissButton" type="button" autofocus @click="dismiss">知道了</button>
-        </section>
-    </div>
+            <button type="button" class="dca-banner-action" @click="goTo(alert)">去处理 →</button>
+        </div>
+    </aside>
 </template>
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted, onUnmounted } from 'vue';
-import moment from 'moment-timezone';
-import { cryptoDCAState, dcaSymbols, syncCryptoDCAOnOpen, type CryptoDCAAlert } from '@/lib/crypto-dca.ts';
+import { ref, watch, onMounted, onUnmounted } from 'vue';
+import { f7 } from 'framework7-vue';
+import { cryptoDCAState, syncCryptoDCAOnOpen } from '@/lib/crypto-dca.ts';
+import { fundDCAAlerts, syncInvestmentPlansOnOpen } from '@/lib/investment-mobile.ts';
+import { buildUnifiedDCAAlerts, dispatchNativeDCAAlerts, type UnifiedDCAAlert } from '@/lib/dca-alerts.ts';
+import { registerBackOverlayHandler } from '@/lib/ui/mobile.ts';
 import { getCurrentUserInfo, isUserUnlocked } from '@/lib/userstate.ts';
+import { useLedgerScopeStore } from '@/stores/ledgerScope.ts';
 import { useUserStore } from '@/stores/user.ts';
-const users=useUserStore();
-const visible = ref<CryptoDCAAlert[]>([]);
-const dismissButton=ref<HTMLButtonElement>();
-let previousFocus: HTMLElement | undefined;
+
+const users = useUserStore();
+const ledgerScope = useLedgerScopeStore();
+const visible = ref<UnifiedDCAAlert[]>([]);
 const seen = new Set<string>();
 let timer: ReturnType<typeof setInterval> | undefined;
-function key(alert: CryptoDCAAlert): string {
-    return `cy-dca-reminder:${getCurrentUserInfo()?.username || ''}:${alert.accountId}:${alert.paymentInstrumentId}:${alert.paused ? 'paused' : 'low'}:${moment().format('YYYY-MM-DD')}`;
+let unregisterBack: (() => void) | undefined;
+
+function key(alert: UnifiedDCAAlert): string {
+    return `cy-dca-reminder:${getCurrentUserInfo()?.username || ''}:${alert.id}:${alert.severity}:${alert.day}`;
 }
-function wasSeen(alert: CryptoDCAAlert): boolean {
+function wasSeen(alert: UnifiedDCAAlert): boolean {
     if (seen.has(key(alert))) return true;
-    try { return sessionStorage.getItem(key(alert)) === '1'; } catch { return false; }
+    try { return localStorage.getItem(key(alert)) === '1'; } catch { return false; }
+}
+function markSeen(alerts: UnifiedDCAAlert[]): void {
+    for (const alert of alerts) {
+        seen.add(key(alert));
+        try { localStorage.setItem(key(alert), '1'); } catch { /* Ignore storage quota issues. */ }
+    }
 }
 function dismiss(): void {
-    for (const alert of visible.value) { seen.add(key(alert)); try { sessionStorage.setItem(key(alert), '1'); } catch { /* Private browsing may disable storage. */ } }
+    markSeen(visible.value);
     visible.value = [];
-    previousFocus?.focus();
 }
-watch(cryptoDCAState, state => {
-    if (!isUserUnlocked()) { visible.value = []; return; }
-    visible.value = (state?.alerts || []).filter(alert => !wasSeen(alert));
-    if (visible.value.length) { if (document.activeElement instanceof HTMLElement && document.activeElement !== dismissButton.value) previousFocus=document.activeElement; void nextTick(()=>dismissButton.value?.focus()); }
+function goTo(alert: UnifiedDCAAlert): void {
+    markSeen([alert]);
+    visible.value = visible.value.filter(item => item.id !== alert.id);
+    if (alert.route) {
+        f7?.views?.main?.router?.navigate(alert.route);
+    }
+}
+function isUserTyping(): boolean {
+    const el = document.activeElement;
+    return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || (el as HTMLElement).isContentEditable);
+}
+function evaluateAlerts(): void {
+    if (!isUserUnlocked()) {
+        visible.value = [];
+        return;
+    }
+    const unified = buildUnifiedDCAAlerts(cryptoDCAState.value?.alerts || [], fundDCAAlerts.value || [], ledgerScope.timeZone);
+    if (dispatchNativeDCAAlerts(unified)) {
+        visible.value = [];
+        return;
+    }
+    const next = unified.filter(alert => !wasSeen(alert));
+    if (!next.length) {
+        visible.value = [];
+        return;
+    }
+    if (isUserTyping() && !visible.value.length) return;
+    visible.value = next;
+}
+
+watch([cryptoDCAState, fundDCAAlerts], evaluateAlerts);
+watch(() => users.currentUserBasicInfo?.username, () => {
+    visible.value = [];
+    cryptoDCAState.value = undefined;
+    fundDCAAlerts.value = [];
+    tick();
 });
-watch(()=>users.currentUserBasicInfo?.username,()=>{ visible.value=[]; cryptoDCAState.value=undefined; tick(); });
-function tick(): void { if (!isUserUnlocked()) visible.value = []; void syncCryptoDCAOnOpen(); }
-onMounted(() => { tick(); timer = setInterval(tick, 60000); document.addEventListener('visibilitychange', tick); window.addEventListener('online', tick); });
-onUnmounted(() => { if (timer) clearInterval(timer); document.removeEventListener('visibilitychange', tick); window.removeEventListener('online', tick); });
+function tick(): void {
+    if (!isUserUnlocked()) {
+        visible.value = [];
+        return;
+    }
+    void syncCryptoDCAOnOpen();
+    void syncInvestmentPlansOnOpen();
+}
+onMounted(() => {
+    tick();
+    timer = setInterval(tick, 60000);
+    document.addEventListener('visibilitychange', tick);
+    window.addEventListener('online', tick);
+    window.addEventListener('cyledger-notification-permission', evaluateAlerts);
+    unregisterBack = registerBackOverlayHandler(() => {
+        if (!visible.value.length) return false;
+        dismiss();
+        return true;
+    });
+});
+onUnmounted(() => {
+    if (timer) clearInterval(timer);
+    document.removeEventListener('visibilitychange', tick);
+    window.removeEventListener('online', tick);
+    window.removeEventListener('cyledger-notification-permission', evaluateAlerts);
+    unregisterBack?.();
+});
 </script>
 <style scoped>
-.dca-notice-backdrop{position:fixed;inset:0;z-index:15000;display:grid;place-items:center;padding:24px;background:#0007;color:var(--cy-text,#242a30)}.dca-notice{width:min(100%,440px);max-height:80vh;overflow:auto;padding:24px;border-radius:20px;background:var(--cy-card,#fff);box-shadow:0 20px 70px #0003}.dca-notice h2{font-size:20px;margin:0 0 20px}.dca-notice p{font-size:14px;line-height:1.8;overflow-wrap:anywhere}.dca-notice button{width:100%;padding:13px;border:0;border-radius:10px;background:var(--cy-accent,#35776f);color:white;font:inherit;cursor:pointer;margin-top:12px}
+.dca-banner{position:fixed;top:calc(var(--f7-safe-area-top, 0px) + 10px);left:12px;right:12px;z-index:12500;max-width:540px;margin:0 auto;padding:14px 16px;border-radius:16px;background:var(--cy-card,#fff);color:var(--cy-ink,#242a30);border:1px solid var(--cy-line,#e5e9e7);box-shadow:0 12px 32px rgba(0,0,0,.18)}
+.dca-banner-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;font-size:14px}
+.dca-banner-close{border:0;background:transparent;color:var(--cy-muted,#6b757c);font:inherit;font-size:13px;padding:4px 6px;cursor:pointer}
+.dca-banner-item{display:flex;align-items:center;gap:12px;padding-top:8px;border-top:1px solid var(--cy-line,#edf0ef)}
+.dca-banner-item:first-of-type{padding-top:2px;border-top:0}
+.dca-banner-copy{flex:1;min-width:0}
+.dca-banner-copy strong{display:block;font-size:13px;font-weight:600}
+.dca-banner-copy p{margin:3px 0 0;font-size:12px;line-height:1.55;color:var(--cy-muted,#6b757c);overflow-wrap:anywhere}
+.dca-banner-action{flex:none;border:0;border-radius:9px;background:var(--cy-accent,#087f72);color:#fff;font:inherit;font-size:12px;font-weight:500;padding:8px 12px;cursor:pointer}
+.dark .dca-banner{background:#202e35;color:#e3ece9;border-color:#314148;box-shadow:0 14px 36px rgba(0,0,0,.45)}
+.dark .dca-banner-action{color:#102725}
 </style>

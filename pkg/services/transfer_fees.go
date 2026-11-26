@@ -7,11 +7,77 @@ import (
 	"github.com/mayswind/ezbookkeeping/pkg/core"
 	"github.com/mayswind/ezbookkeeping/pkg/errs"
 	"github.com/mayswind/ezbookkeeping/pkg/models"
+	"github.com/mayswind/ezbookkeeping/pkg/utils"
 	"github.com/shopspring/decimal"
 	"xorm.io/xorm"
 )
 
 var transferFeePattern = regexp.MustCompile(`^-?(0|[1-9][0-9]{0,12})(\.[0-9]{1,2})?$`)
+
+// A metadata-only edit must not delete and recreate an unchanged cash fact.
+// In particular, later processed monetary-income days may depend on its identity.
+func (s *TransactionService) preserveUnchangedTransferFee(sess *xorm.Session, old, next *models.Transaction) (bool, error) {
+	if old.Type != models.TRANSACTION_DB_TYPE_TRANSFER_OUT || next.Type != old.Type || old.AccountId != next.AccountId ||
+		utils.GetUnixTimeFromTransactionTime(old.TransactionTime) != utils.GetUnixTimeFromTransactionTime(next.TransactionTime) {
+		return false, nil
+	}
+	oldValue := old.TransferFeeAmount
+	if oldValue == "" {
+		oldValue = "0"
+	}
+	a, err := decimal.NewFromString(oldValue)
+	if err != nil {
+		return false, err
+	}
+	b, err := decimal.NewFromString(next.TransferFeeAmount)
+	if err != nil {
+		return false, err
+	}
+	if !a.Equal(b) {
+		return false, nil
+	}
+	var fees []models.Transaction
+	if err := sess.Where("uid=? AND transfer_fee_parent_id=? AND deleted=?", old.Uid, old.TransactionId, false).Find(&fees); err != nil {
+		return false, err
+	}
+	if a.IsZero() {
+		return len(fees) == 0, nil
+	}
+	if len(fees) != 1 {
+		return false, nil
+	}
+	fee := fees[0]
+	kind := models.TRANSACTION_DB_TYPE_EXPENSE
+	if a.IsNegative() {
+		kind = models.TRANSACTION_DB_TYPE_INCOME
+	}
+	if fee.Type != kind || fee.AccountId != old.AccountId ||
+		utils.GetUnixTimeFromTransactionTime(fee.TransactionTime) != utils.GetUnixTimeFromTransactionTime(old.TransactionTime) ||
+		!decimal.NewFromInt(fee.Amount).Equal(a.Abs().Shift(2)) {
+		return false, nil
+	}
+	if fee.CategoryId != next.TransferFeeCategoryId {
+		candidate := fee
+		candidate.CategoryId = next.TransferFeeCategoryId
+		if err := s.isCategoryValid(sess, &candidate); err != nil {
+			return false, err
+		}
+	}
+	if fee.BookId != next.BookId || fee.CategoryId != next.TransferFeeCategoryId || fee.HideAmount != next.HideAmount ||
+		fee.ExcludeFromStatistics != next.ExcludeFromStatistics || fee.TimezoneUtcOffset != next.TimezoneUtcOffset {
+		updated := &models.Transaction{BookId: next.BookId, CategoryId: next.TransferFeeCategoryId, HideAmount: next.HideAmount,
+			ExcludeFromStatistics: next.ExcludeFromStatistics, TimezoneUtcOffset: next.TimezoneUtcOffset, UpdatedUnixTime: time.Now().Unix()}
+		rows, err := sess.ID(fee.TransactionId).Where("uid=? AND deleted=?", old.Uid, false).
+			Cols("book_id", "category_id", "hide_amount", "exclude_from_statistics", "timezone_utc_offset", "updated_unix_time").Update(updated)
+		if err != nil {
+			return false, err
+		}
+		if rows != 1 {
+			return false, errs.ErrTransactionNotFound
+		}
+	}
+	return true, nil
+}
 
 func validateTransferFee(transaction *models.Transaction) error {
 	value := transaction.TransferFeeAmount
@@ -56,12 +122,15 @@ func (s *TransactionService) createTransferFee(c core.Context, sess *xorm.Sessio
 	return s.createTransactionInSession(c, sess, fee, nil, nil)
 }
 
-func (s *TransactionService) removeTransferFee(sess *xorm.Session, uid, parentID int64) error {
+func (s *TransactionService) removeTransferFee(sess *xorm.Session, uid, parentID int64, clearedAccounts ...map[int64]bool) error {
 	var fees []models.Transaction
 	if err := sess.Where("uid=? AND transfer_fee_parent_id=? AND deleted=?", uid, parentID, false).Find(&fees); err != nil {
 		return err
 	}
 	for _, fee := range fees {
+		if err := guardMonetaryFlowHistory(sess, uid, &fee, nil, clearedAccounts...); err != nil {
+			return err
+		}
 		if fee.Type != models.TRANSACTION_DB_TYPE_INCOME && fee.Type != models.TRANSACTION_DB_TYPE_EXPENSE {
 			return investmentError("手续费关联记录无效")
 		}

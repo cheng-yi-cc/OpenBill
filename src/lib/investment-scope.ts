@@ -1,7 +1,7 @@
 import type {HoldingProfile} from '@/models/investment.ts';
 import type {AssetPreferences} from '@/lib/asset-tools.ts';
 import type {HoldingRow} from '@/lib/investment-mobile.ts';
-import {LedgerDecimal} from '@/lib/ledger-display.ts';
+import {summarizeAmounts} from '@/lib/amount-summary.ts';
 
 export function accountInBooks(preferences: AssetPreferences, kind: 'cash' | 'portfolio', id: string, bookIds: string[]): boolean {
     const disabled = preferences.rules[`${kind}:${id}`]?.disabledBooks || [];
@@ -20,11 +20,13 @@ export function holdingVisible(profile: HoldingProfile, preferences: AssetPrefer
 
 export function investmentAmounts(rows: HoldingRow[], monetary: {value:string|null;excluded:boolean;binding:{totalIncome?:string}}[]) {
     const included=rows.filter(r=>!r.profile.excludeFromTotal),cash=monetary.filter(r=>!r.excluded);
-    const sum=(values:(string|null|undefined)[]):string|null=>values.some(v=>v==null)?null:values.reduce((s,v)=>s.plus(v!),new LedgerDecimal(0)).toString();
+    const netValue=summarizeAmounts(included.map(r=>r.profile.excludeProfit?r.position.cost:r.position.marketValue).concat(cash.map(r=>r.value)));
+    const marketValue=summarizeAmounts(included.map(r=>r.position.marketValue).concat(cash.map(r=>r.value)));
+    const holdingProfit=summarizeAmounts(included.map(r=>r.position.unrealizedPnl));
+    const totalProfit=summarizeAmounts(included.map(r=>r.profit).concat(cash.map(r=>r.binding.totalIncome??null)));
     return {
-        netValue:sum(included.map(r=>r.profile.excludeProfit?r.position.cost:r.position.marketValue).concat(cash.map(r=>r.value))),
-        marketValue:sum(included.map(r=>r.position.marketValue).concat(cash.map(r=>r.value))),
-        holdingProfit:sum(included.map(r=>r.position.unrealizedPnl)),
-        totalProfit:sum(included.map(r=>r.profit).concat(cash.map(r=>r.binding.totalIncome??null)))
+        netValue:netValue.value, marketValue:marketValue.value,
+        holdingProfit:holdingProfit.value, totalProfit:totalProfit.value,
+        missing:{netValue:netValue.missing,marketValue:marketValue.missing,holdingProfit:holdingProfit.missing,totalProfit:totalProfit.missing}
     };
 }

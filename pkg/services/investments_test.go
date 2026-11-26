@@ -59,7 +59,7 @@ func newInvestmentDBFixture(t *testing.T) *investmentDBFixture {
 	})
 	require.NoError(t, datastore.Container.UserDataStore.SyncStructs(
 		&models.StatisticsBudget{}, &models.StatisticsNote{}, &models.StatisticsPreference{},
-		&models.LocalLedgerItem{},
+		&models.LocalLedgerItem{}, &models.Refund{},
 		&models.Book{}, &models.CalendarEvent{}, &models.AssetPresentation{}, &models.FixedDeposit{}, &models.ReimbursementReceipt{}, &models.AssetAdjustment{}, &models.CreditInstallment{}, &models.DebtMovement{}, &models.MonetaryIncomeBinding{}, &models.MonetaryIncomeDay{}, &models.TransactionTemplate{}, &models.Account{}, &models.Transaction{}, &models.TransactionCategory{}, &models.TransactionTag{}, &models.TransactionTagIndex{}, &models.TransactionPictureInfo{},
 		&models.PortfolioAccount{}, &models.InvestmentInstrument{}, &models.InvestmentHoldingProfile{}, &models.InvestmentPlan{}, &models.InvestmentOrder{}, &models.InvestmentSettings{}, &models.InvestmentEventRecord{}, &models.InvestmentEventRevision{},
 		&models.InvestmentTransactionLink{}, &models.InvestmentIdempotency{}, &models.InvestmentQuote{}, &models.WealthSnapshot{},
@@ -550,7 +550,7 @@ func TestInvestmentDBFiatScientificNotationRejectedBeforeArithmetic(t *testing.T
 	for index, sample := range cases {
 		_, err := f.s.Mutate(nil, f.uid, f.event(investments.Buy, "0.001", sample.amount, sample.fee, int64(index+1)), fmt.Sprintf("invalid-decimal-%d", index), "create", false)
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "普通十进制字符串", "reject notation before decimal magnitude or scale checks")
+		require.Contains(t, err.Error(), "有效数字", "reject notation before decimal magnitude or scale checks")
 	}
 	require.Equal(t, int64(2000000), f.balance())
 	require.Zero(t, f.count(&models.InvestmentEventRecord{}))

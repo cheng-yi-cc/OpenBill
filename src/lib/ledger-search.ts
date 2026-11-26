@@ -5,9 +5,16 @@ export interface LedgerSearchFilters {
     bookIds: string[]; accountIds: string[]; reimbursementIds: string[]; categoryIds: string[]; tagIds: string[];
     flags: string[]; matchAll: boolean;
 }
-export const ledgerSearchFlags: Record<string, string> = {
-    expense: '支出', income: '收入', transfer: '转账', refund: '退款', reimbursement: '所有报销',
+export const ledgerSearchTypeFlags: Record<string, string> = {
+    expense: '支出', income: '收入', transfer: '转账'
+};
+export const ledgerSearchAttrFlags: Record<string, string> = {
+    refund: '退款', reimbursement: '所有报销',
     pending: '待报销', completed: '已报销', discount: '有优惠', picture: '有附件', location: '有地点', excluded: '不计收支', untagged: '无标签'
+};
+export const ledgerSearchFlags: Record<string, string> = {
+    ...ledgerSearchTypeFlags,
+    ...ledgerSearchAttrFlags
 };
 export function emptyLedgerSearchFilters(): LedgerSearchFilters {
     return { start: '', end: '', minimum: '', maximum: '', remark: '', location: '', bookIds: [], accountIds: [], reimbursementIds: [], categoryIds: [], tagIds: [], flags: [], matchAll: false };
@@ -24,7 +31,7 @@ function hasFlag(item: LedgerEntry, flag: string): boolean {
         case 'expense': return item.type === 3;
         case 'income': return item.type === 2;
         case 'transfer': return item.type === 4;
-        case 'refund': return item.type === 3 && new LedgerDecimal(item.amount).lt(0);
+        case 'refund': return !!item.refundedAmount || !!item.refundExcess || (item.type === 3 && new LedgerDecimal(item.amount).lt(0));
         case 'reimbursement': return reimbursement;
         case 'pending': return reimbursement && !item.reimbursementClosedAt;
         case 'completed': return reimbursement && !!item.reimbursementClosedAt;
@@ -55,7 +62,12 @@ export function filterLedgerEntries(items: LedgerEntry[], query: string, filters
         if (filters.location && !item.location?.toLocaleLowerCase().includes(filters.location.toLocaleLowerCase())) return false;
         const text = [item.title, item.primaryCategory, item.comment, item.account, item.bookName, ...item.tags].join(' ').toLocaleLowerCase();
         if (!terms.every(term => text.includes(term))) return false;
-        return !filters.flags.length || (filters.matchAll ? filters.flags.every(flag => hasFlag(item, flag)) : filters.flags.some(flag => hasFlag(item, flag)));
+        if (!filters.flags.length) return true;
+        const typeFlags = filters.flags.filter(flag => flag in ledgerSearchTypeFlags);
+        const attrFlags = filters.flags.filter(flag => !(flag in ledgerSearchTypeFlags));
+        const matchType = !typeFlags.length || typeFlags.some(flag => hasFlag(item, flag));
+        const matchAttr = !attrFlags.length || (filters.matchAll ? attrFlags.every(flag => hasFlag(item, flag)) : attrFlags.some(flag => hasFlag(item, flag)));
+        return matchType && matchAttr;
     });
 }
 export function ledgerFilterCount(filters: LedgerSearchFilters): number {

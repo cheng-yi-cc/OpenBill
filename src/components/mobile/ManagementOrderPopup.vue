@@ -9,7 +9,7 @@
                 <p class="order-hint">拖动右侧把手调整顺序，也可点击箭头移动。</p>
                 <div v-if="allowNameSort" class="order-tools"><button :disabled="busy" @click="sortNames(false)">名称升序</button><button :disabled="busy" @click="sortNames(true)">名称降序</button></div>
                 <p v-if="error" class="cy-message" role="alert">{{ error }}</p>
-                <draggable v-model="draft" item-key="id" handle=".order-handle" :disabled="busy" :animation="150">
+                <div ref="orderListEl"><draggable v-model="draft" item-key="id" handle=".order-handle" :disabled="busy" :animation="180" ghost-class="cy-drag-ghost" chosen-class="cy-drag-chosen">
                     <template #item="{ element, index }">
                         <div class="order-row">
                             <span class="order-name">{{ element.name }}<small v-if="element.hidden">已隐藏</small></span>
@@ -18,7 +18,7 @@
                             <span class="order-handle" :aria-label="`拖动${element.name}排序`"><f7-icon f7="line_horizontal_3" /></span>
                         </div>
                     </template>
-                </draggable>
+                </draggable></div>
             </main>
         </f7-page>
     </f7-popup>
@@ -26,16 +26,26 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import draggable from 'vuedraggable';
+import { animateFlipSwap } from '@/lib/motion.ts';
 const props = defineProps<{ open: boolean; title: string; items: { id: string; name: string; hidden?: boolean }[]; busy: boolean; error: string; allowNameSort?: boolean }>();
 const emit = defineEmits<{ 'update:open': [value: boolean]; save: [ids: string[]] }>();
 const draft = ref<{ id: string; name: string; hidden?: boolean }[]>([]);
+const orderListEl = ref<HTMLElement>();
 watch(() => props.open, open => { if (open) draft.value = props.items.map(item => ({ ...item })); });
-function sortNames(descending: boolean) { draft.value.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true }) * (descending ? -1 : 1)); }
+function sortNames(descending: boolean) {
+    const container = orderListEl.value?.firstElementChild as HTMLElement | null;
+    animateFlipSwap(container, () => {
+        draft.value.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true }) * (descending ? -1 : 1));
+    }, '.order-row');
+}
 function move(from: number, to: number) {
     const item = draft.value[from];
     if (!item || to < 0 || to >= draft.value.length || props.busy) return;
-    draft.value.splice(from, 1);
-    draft.value.splice(to, 0, item);
+    const container = orderListEl.value?.firstElementChild as HTMLElement | null;
+    animateFlipSwap(container, () => {
+        draft.value.splice(from, 1);
+        draft.value.splice(to, 0, item);
+    }, '.order-row');
 }
 </script>
 <style scoped>

@@ -1,7 +1,7 @@
 <template>
     <f7-page class="cy-account-edit cy-mobile-surface" @page:afterin="onPageAfterIn">
         <f7-navbar>
-            <f7-nav-left><f7-link icon-f7="xmark" aria-label="取消" @click="f7router.back()" /></f7-nav-left>
+            <f7-nav-left><f7-link icon-f7="xmark" aria-label="取消" @click="cancelEdit" /></f7-nav-left>
             <f7-nav-title :title="tt(title)"></f7-nav-title>
             <f7-nav-right :class="{ 'navbar-compact-icons': true, 'disabled': loading }">
                 <f7-link icon-f7="ellipsis" v-if="account.type === AccountType.MultiSubAccounts.type" :aria-label="tt('More')" @click="showMoreActionSheet = true"></f7-link>
@@ -10,7 +10,8 @@
         </f7-navbar>
 
         <div v-if="loading" class="cy-empty"><f7-preloader /></div>
-        <AssetAccountForm v-if="!loading && account.type === AccountType.SingleAccount.type" :account="account" :edit="!!editAccountId" :initial-balance="initialBalance" :income-name="incomeDraft?.fund.name || boundIncomeName" v-model:disabled-books="disabledBooks" v-model:count-adjustment="countAdjustment" @income="showIncomeSetup=true" />
+        <p v-if="incomeLoadError" class="cy-message" role="alert">{{ incomeLoadError }} <button @click="refreshIncomeName">重试</button></p>
+        <AssetAccountForm v-if="!loading && account.type === AccountType.SingleAccount.type" :account="account" :edit="!!editAccountId" :initial-balance="initialBalance" :income-name="incomeDraft?.fund.name || boundIncomeName" v-model:disabled-books="disabledBooks" v-model:count-adjustment="countAdjustment" v-model:adjustment-details="adjustmentDetails" @income="showIncomeSetup=true" />
         <f7-list form strong inset dividers class="margin-vertical" v-if="!loading && account.type === AccountType.MultiSubAccounts.type">
             <f7-list-input
                 type="text"
@@ -358,9 +359,10 @@
 import { ref, computed, watch, nextTick } from 'vue';
 import AssetAccountForm from '@/components/mobile/AssetAccountForm.vue';
 import BankSelectionSheet from '@/components/mobile/BankSelectionSheet.vue';
-import { assetTools } from '@/lib/asset-tools.ts';
+import { assetTools, defaultBalanceAdjustmentDetails } from '@/lib/asset-tools.ts';
 import { useAssetToolsStore } from '@/stores/assetTools.ts';
 import { useTransactionsStore } from '@/stores/transaction.ts';
+import { useTransactionCategoriesStore } from '@/stores/transactionCategory.ts';
 import { LedgerDecimal } from '@/lib/ledger-display.ts';
 import { getTimeZone } from '@/lib/settings.ts';
 import { getBrowserTimezoneName } from '@/lib/datetime.ts';
@@ -423,7 +425,7 @@ const {
     formatAmountToLocalizedNumeralsWithCurrency
 } = useI18n();
 
-const { showAlert, showToast, routeBackOnError } = useI18nUIComponents();
+const { showAlert, showToast, showConfirm, routeBackOnError } = useI18nUIComponents();
 
 const {
     editAccountId,
@@ -449,8 +451,26 @@ const {
 
 const accountsStore = useAccountsStore(), assetPreferences = useAssetToolsStore();
 const initialBalance=ref('0'), disabledBooks=ref<string[]>([]), countAdjustment=ref(false),boundIncomeName=ref('');
+const incomeLoadError=ref('');
+let incomeLoadGeneration=0;
+async function refreshIncomeName():Promise<void>{const id=editAccountId.value;if(!id)return;const version=++incomeLoadGeneration;try{const rows=await monetaryIncome.list();if(version===incomeLoadGeneration&&editAccountId.value===id){boundIncomeName.value=rows.find(r=>r.accountId===id&&r.enabled)?.name||'';incomeLoadError.value='';}}catch(cause){if(version===incomeLoadGeneration)incomeLoadError.value=investmentError(cause);}}
+const adjustmentDetails=ref(defaultBalanceAdjustmentDetails());
 const showBanks=ref(false);
-function selectBank(bank:{name:string;color:string}):void{account.value.name=bank.name+(account.value.category===3?'信用卡':'');account.value.color=bank.color.replace('#','');}
+const initialSnapshot=ref('');
+function snapshotAccount():string{return JSON.stringify({name:account.value.name,balance:account.value.balance,comment:account.value.comment,creditCardLimit:account.value.creditCardLimit,creditCardStatementDate:account.value.creditCardStatementDate,currency:account.value.currency,profile:account.value.assetProfile,disabledBooks:disabledBooks.value,income:incomeDraft.value?.code||''});}
+function cancelEdit():void{
+    if(submitting.value)return;
+    if(!loading.value && initialSnapshot.value && snapshotAccount()!==initialSnapshot.value){
+        showConfirm('有未保存的账户修改，确定离开吗？',()=>props.f7router.back(),undefined,{title:'放弃修改',confirmText:'放弃',destructive:true,raw:true});
+        return;
+    }
+    props.f7router.back();
+}
+function selectBank(bank:{name:string;color:string}):void{
+    if(!bank.name){account.value.name='';}
+    else{account.value.name=account.value.category===3&&!bank.name.endsWith('信用卡')?`${bank.name}信用卡`:bank.name;}
+    account.value.color=bank.color.replace('#','');
+}
 let adjustmentRequestId=generateRandomUUID();
 const incomeDraft=ref<MonetaryDraft>(),showIncomeSetup=ref(false),numberPadAnchor=ref<HTMLElement>();
 watch(()=>account.value.type===AccountType.SingleAccount.type && account.value.currency==='CNY' && [1,2,4,8].includes(account.value.category),eligible=>{if(!eligible){incomeDraft.value=undefined;showIncomeSetup.value=false;}});
@@ -517,8 +537,7 @@ function init(): void {
         }).then(response => {
             setAccount(response);
             initialBalance.value=response.balance;
-            void assetPreferences.load().then(()=>{disabledBooks.value=[...(assetPreferences.preferences.rules[`cash:${response.id}`]?.disabledBooks||[])];});
-            void monetaryIncome.list().then(rows=>{boundIncomeName.value=rows.find(r=>r.accountId===response.id&&r.enabled)?.name||'';}).catch(()=>undefined);
+            void assetPreferences.load().then(()=>{disabledBooks.value=[...(assetPreferences.preferences.rules[`cash:${response.id}`]?.disabledBooks||[])];initialSnapshot.value=snapshotAccount();});
             subAccountContexts.value = [];
 
             for (let i = 0; i < subAccounts.value.length; i++) {
@@ -526,6 +545,7 @@ function init(): void {
             }
 
             loading.value = false;
+            initialSnapshot.value = snapshotAccount();
         }).catch(error => {
             if (error.processed) {
                 loading.value = false;
@@ -545,6 +565,7 @@ function init(): void {
         }
         if(query['monetary']==='1'){account.value.name='货币基金';account.value.assetProfile.group='货币基金';void nextTick(()=>{showIncomeSetup.value=true;});}
         loading.value = false;
+        void nextTick(() => { initialSnapshot.value = snapshotAccount(); });
     }
 }
 
@@ -560,9 +581,10 @@ async function save(): Promise<void> {
         metadataSaved=true;
         if(wasNew){editAccountId.value=savedAccount.id;account.value.id=savedAccount.id;initialBalance.value=savedAccount.balance;}
         if(!wasNew && account.value.type===AccountType.SingleAccount.type && desiredBalance!==initialBalance.value){
-            await assetTools.adjustBalance({accountId:savedAccount.id,balance:new LedgerDecimal(desiredBalance).div(100).toString(),expectedBalance:new LedgerDecimal(initialBalance.value).div(100).toString(),bookId:'',countInStatistics:countAdjustment.value,timeZone:getTimeZone()||getBrowserTimezoneName(),requestId:adjustmentRequestId});
+            await assetTools.adjustBalance({accountId:savedAccount.id,balance:new LedgerDecimal(desiredBalance).div(100).toString(),expectedBalance:new LedgerDecimal(initialBalance.value).div(100).toString(),bookId:countAdjustment.value?adjustmentDetails.value.bookId:'',countInStatistics:countAdjustment.value,...(countAdjustment.value?{categoryId:adjustmentDetails.value.categoryId,comment:adjustmentDetails.value.comment,tagIds:adjustmentDetails.value.tagIds}:{}),timeZone:getTimeZone()||getBrowserTimezoneName(),requestId:adjustmentRequestId});
             initialBalance.value=desiredBalance;adjustmentRequestId=generateRandomUUID();
             useTransactionsStore().updateStoreInvalidState({accountList:true,transactionList:true,overview:true,statistics:true,explorer:true,reconciliationStatement:true});
+            useTransactionCategoriesStore().updateTransactionCategoryListInvalidState(true);
         }
         await assetPreferences.load();
         const preferences=JSON.parse(JSON.stringify(assetPreferences.preferences));
@@ -622,6 +644,7 @@ function showLastReconciledDateTimeDialog(accountContext: AccountContext, sheetM
 
 function onPageAfterIn(): void {
     routeBackOnError(props.f7router, loadingError);
+    void refreshIncomeName();
     if (!editAccountId.value && !bankPickerShown && ['bank','credit'].includes(props.f7route.query['preset']||'')) {bankPickerShown=true;showBanks.value=true;}
 }
 let bankPickerShown=false;

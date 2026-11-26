@@ -251,5 +251,22 @@ func Failure(err error) string {
 	if err == nil {
 		return ""
 	}
-	return fmt.Sprint("备份文件无效或操作未完成；现有账本保持不变。")
+	if errors.Is(err, zip.ErrFormat) || errors.Is(err, zip.ErrChecksum) || errors.Is(err, zip.ErrAlgorithm) {
+		return "所选文件不是有效的 ZIP 备份包或已损坏，现有账本保持不变。"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "checksum"):
+		return "备份文件已损坏或内容被修改（校验未通过），现有账本保持不变。"
+	case strings.Contains(msg, "incomplete backup"):
+		return "这不是完整的 OpenBill 备份文件（缺少账本核心数据），现有账本保持不变。"
+	case strings.Contains(msg, "archive too large"), strings.Contains(msg, "too many files"), strings.Contains(msg, "settings too large"), strings.Contains(msg, "manifest too large"):
+		return "备份文件超出允许的大小限制，现有账本保持不变。"
+	case strings.Contains(msg, "invalid manifest"), strings.Contains(msg, "unexpected file"), strings.Contains(msg, "unsafe archive entry"), strings.Contains(msg, "invalid file hash"):
+		return "备份格式不受支持或非 OpenBill 导出的备份包，现有账本保持不变。"
+	case strings.Contains(msg, "unsupported setting"), strings.Contains(msg, "invalid setting"):
+		return "备份中的设置文件格式无效，现有账本保持不变。"
+	default:
+		return fmt.Sprint("备份文件无效或操作未完成，现有账本保持不变。")
+	}
 }

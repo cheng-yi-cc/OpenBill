@@ -9,6 +9,24 @@ const entry=(amount:string|null,day='2026-10-02',patch:Partial<LedgerEntry>={}):
 const budget=(patch:Partial<StatisticsBudget>={}):StatisticsBudget=>({id:'b',bookId:'book',categoryId:'0',name:'月预算',amount:'100',startDate:'2026-09-01',endDate:'2026-09-30',kind:'monthly',repeat:true,revision:'1',...patch});
 const carry={carrySurplus:true,carryDeficit:true};
 describe('budget calculations from ledger facts',()=>{
+ it('keeps income/expense and budget exclusions independent across totals, trend and drill-down',()=>{
+  const facts=[
+   entry('12','2026-10-02',{id:'both',excludeFromStatistics:false,excludeFromBudget:false}),
+   entry('7','2026-10-02',{id:'budget-only',excludeFromStatistics:true,excludeFromBudget:false}),
+   entry('3','2026-10-02',{id:'statistics-only',excludeFromStatistics:false,excludeFromBudget:true}),
+   entry('100','2026-10-02',{id:'neither',excludeFromStatistics:true,excludeFromBudget:true}),
+   entry('100','2026-10-02',{id:'legacy',excludeFromStatistics:true}),
+   entry('100','2026-10-02',{id:'reimbursement',excludeFromBudget:false,reimbursementAccountId:'reimb'}),
+  ];
+  const rule=budget({startDate:'2026-10-01',endDate:'2026-10-31'});
+  const row=budgetReports([rule],facts,'2026-10',carry)[0]!;
+  expect(row).toMatchObject({spent:'19',remaining:'81'});
+  expect(budgetDaily(row,facts,moment.tz('2026-10-02 18:00',zone),'remaining').todayRemaining).toBe('-15.67');
+  const from=moment.tz('2026-10-01',zone),to=from.clone().endOf('month');
+  expect(reportBuckets(facts,from,to,'day',true)[1]).toMatchObject({expense:'19',count:2});
+  expect(filterStatisticsEntries(facts,{aux:'budget'},{}).map(x=>x.id)).toEqual(['both','budget-only']);
+  expect(filterStatisticsEntries(facts,{},{}).map(x=>x.id)).toContain('statistics-only');
+ });
  it('replays carry, refunds and a monthly override without double counting category budgets',()=>{
   const facts=[entry('40','2026-09-05'),entry('30'),entry('-5'),entry('999','2026-10-02',{type:4}),entry('500','2026-10-02',{excludeFromStatistics:true}),entry('500','2026-10-02',{investment:true})];
   const rows=budgetReports([budget(),budget({id:'override',amount:'80',startDate:'2026-10-01',endDate:'2026-10-31'}),budget({id:'category',categoryId:'root',amount:'50'})],facts,'2026-10',carry);

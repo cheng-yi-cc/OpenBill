@@ -2,6 +2,7 @@ package com.cyledger.android;
 
 import android.animation.ValueAnimator;
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -9,13 +10,18 @@ import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.view.View;
-import android.view.animation.DecelerateInterpolator;
+import android.view.animation.PathInterpolator;
 
 /** 启动期间绘制品牌图形；页面就绪即可退出，不人为延长启动。 */
 public final class OpenBillSplash extends View {
     private static final int INK = Color.rgb(21, 63, 53);
     private static final int PAPER = Color.rgb(247, 244, 235);
     private static final int SAGE = Color.rgb(169, 207, 181);
+    private static final int DARK_BG = Color.rgb(20, 33, 39);
+    private static final int DARK_BADGE = Color.rgb(22, 63, 67);
+    private static final int DARK_TEXT = Color.rgb(227, 236, 233);
+    private static final int DARK_MUTED = Color.rgb(154, 173, 168);
+    private final boolean dark;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path left = new Path();
     private final Path right = new Path();
@@ -25,7 +31,8 @@ public final class OpenBillSplash extends View {
 
     public OpenBillSplash(Context context) {
         super(context);
-        setBackgroundColor(PAPER);
+        this.dark = (context.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        setBackgroundColor(dark ? DARK_BG : PAPER);
         setContentDescription("OpenBill，正在打开账本");
         setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
         setClickable(true);
@@ -43,7 +50,7 @@ public final class OpenBillSplash extends View {
         if (progress >= 1f) return;
         animator = ValueAnimator.ofFloat(progress, 1f);
         animator.setDuration(Math.max(1, (long) (850 * (1f - progress))));
-        animator.setInterpolator(new DecelerateInterpolator());
+        animator.setInterpolator(new PathInterpolator(0.22f, 1f, 0.36f, 1f));
         animator.addUpdateListener(value -> { progress = (float) value.getAnimatedValue(); invalidate(); });
         animator.start();
     }
@@ -61,24 +68,24 @@ public final class OpenBillSplash extends View {
         canvas.save();
         canvas.translate((getWidth() - size) / 2, centerY - size / 2);
         canvas.scale(size / 108, size / 108);
-        paint.setStyle(Paint.Style.FILL); paint.setColor(INK);
+        paint.setStyle(Paint.Style.FILL); paint.setColor(dark ? DARK_BADGE : INK);
         canvas.drawRoundRect(new RectF(0, 0, 108, 108), 25, 25, paint);
         paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(3.5f);
         paint.setStrokeCap(Paint.Cap.ROUND); paint.setColor(SAGE);
         canvas.drawArc(new RectF(17, 17, 91, 91), -54, -320 * progress, false, paint);
         canvas.save();
         canvas.scale(.15f + .85f * progress, 1, 54, 54);
-        paint.setStyle(Paint.Style.FILL); paint.setColor(PAPER); canvas.drawPath(left, paint);
+        paint.setStyle(Paint.Style.FILL); paint.setColor(dark ? DARK_TEXT : PAPER); canvas.drawPath(left, paint);
         paint.setColor(SAGE); canvas.drawPath(right, paint);
-        paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2.5f); paint.setColor(INK);
+        paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2.5f); paint.setColor(dark ? DARK_BADGE : INK);
         canvas.drawPath(lines, paint);
         canvas.restore(); canvas.restore();
-        paint.setStyle(Paint.Style.FILL); paint.setColor(INK); paint.setTextAlign(Paint.Align.CENTER);
+        paint.setStyle(Paint.Style.FILL); paint.setColor(dark ? DARK_TEXT : INK); paint.setTextAlign(Paint.Align.CENTER);
         paint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         paint.setTextSize(30 * density);
         canvas.drawText("OpenBill", getWidth() / 2f, centerY + size / 2 + 49 * density, paint);
         paint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
-        paint.setTextSize(13 * density); paint.setColor(Color.rgb(104, 121, 110));
+        paint.setTextSize(13 * density); paint.setColor(dark ? DARK_MUTED : Color.rgb(104, 121, 110));
         canvas.drawText("打开账本，理清生活", getWidth() / 2f, centerY + size / 2 + 78 * density, paint);
     }
 }

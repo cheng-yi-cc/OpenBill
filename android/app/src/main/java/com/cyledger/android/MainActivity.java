@@ -34,33 +34,19 @@ import android.widget.Toast;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 
-import java.io.ByteArrayOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.security.KeyStore;
-import java.security.cert.X509Certificate;
-import java.util.Locale;
 import java.util.Collections;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
-
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.TrustManagerFactory;
-import javax.net.ssl.X509TrustManager;
 
 public final class MainActivity extends Activity {
-    private static final Object START_LOCK = new Object();
-    private static boolean backendStarted;
-    private static volatile String startupError;
     private static final int PICK_FILE = 71;
     private static final int SAVE_FILE = 72;
     private static final int MAX_DOWNLOAD = 20 * 1024 * 1024;
@@ -71,6 +57,7 @@ public final class MainActivity extends Activity {
     private OpenBillSplash splash;
     private boolean checkingPage;
     private String origin;
+    private String pendingRoute = "";
     private ValueCallback<Uri[]> uploadCallback;
     private byte[] pendingDownload;
     private boolean loaded;
@@ -80,48 +67,45 @@ public final class MainActivity extends Activity {
     private boolean destroyed;
     private Boolean appearanceDark;
     private android.window.OnBackInvokedCallback backCallback;
+    private long lastBackPressAt;
+
+    private String requestedRoute(Intent intent) {
+        if (intent == null) return "";
+        if (intent.getBooleanExtra("quickEntry", false)) return "/transaction/add?type=3";
+        return DcaNotifier.safeRoute(intent.getStringExtra("openRoute"));
+    }
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         if (android.os.Build.VERSION.SDK_INT >= 31) {
             getSplashScreen().setOnExitAnimationListener(provider -> provider.remove());
         }
-        try { MaintenanceActivity.recover(getFilesDir()); } catch(Exception error){ finish(); return; }
-        local=new LocalBridge(this);
-        int port = getPackageName().endsWith(".qa") ? 18762 : 18761;
-        origin = "http://127.0.0.1:" + port;
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         setContentView(root);
-        appearanceDark = false;
+        boolean night = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        appearanceDark = night;
         applyInsets();
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             backCallback = this::onBackPressed;
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                 android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, backCallback);
         }
-        root.setBackgroundColor(Color.rgb(247, 244, 235));
+        try {
+            MaintenanceActivity.recover(getFilesDir());
+        } catch (Exception error) {
+            showStatus("上次备份恢复未完成，你的账本文件仍保存在手机中，暂未丢失。请点击下方按钮重新启动。", true, true);
+            return;
+        }
+        local=new LocalBridge(this);
+        origin = LedgerRuntime.origin(this);
+        pendingRoute = requestedRoute(getIntent());
+        DcaNotifier.ensureChannel(this);
+        DcaScheduler.ensurePeriodic(this);
+        root.setBackgroundColor(night ? Color.rgb(20, 33, 39) : Color.rgb(247, 244, 235));
         splash = new OpenBillSplash(this);
         root.addView(splash, new LinearLayout.LayoutParams(-1, -1));
-        synchronized (START_LOCK) {
-            if (!backendStarted) {
-                backendStarted = true;
-                Thread nativeThread = new Thread(() -> {
-                    try {
-                        File directory = new File(getFilesDir(), "ledger");
-                        if (!directory.isDirectory() && !directory.mkdirs()) throw new Exception("private directory");
-                        prepareAssets(directory);
-                        prepareTrustStore(directory);
-                        MarketNetwork.start(getApplicationContext());
-                        startupError = NativeBridge.start(directory.getAbsolutePath(), port);
-                    } catch (Throwable error) {
-                        startupError = "手机账本服务启动失败。请保留应用数据，关闭后重新打开。";
-                    }
-                }, "CYLedger-local-service");
-                nativeThread.setDaemon(true);
-                nativeThread.start();
-            }
-        }
+        LedgerRuntime.ensureStarted(this);
         io.execute(() -> waitForBackend(state));
     }
 
@@ -132,7 +116,7 @@ public final class MainActivity extends Activity {
                 android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
                 android.graphics.Insets keyboard = insets.getInsets(WindowInsets.Type.ime());
                 view.setPadding(bars.left, bars.top, bars.right, Math.max(bars.bottom, keyboard.bottom));
-                return insets;
+                return WindowInsets.CONSUMED;
             });
             WindowInsetsController controller = getWindow().getInsetsController();
             if (controller != null) {
@@ -145,28 +129,57 @@ public final class MainActivity extends Activity {
     }
 
     private void showStatus(String message, boolean retry) {
+        showStatus(message, retry, LedgerRuntime.getStartupError() != null);
+    }
+
+    private void showStatus(String message, boolean retry, boolean restartProcess) {
         splash = null;
         checkingPage = false;
         root.removeAllViews();
-        root.setBackgroundColor(Color.rgb(247, 244, 237));
+        boolean dark = appearanceDark != null ? appearanceDark : (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        float dp = getResources().getDisplayMetrics().density;
+        int pad = Math.round(24 * dp);
+        root.setBackgroundColor(dark ? Color.rgb(20, 33, 39) : Color.rgb(247, 244, 237));
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER);
+        box.setPadding(pad, pad, pad, pad);
         TextView label = new TextView(this);
         label.setText(message);
-        label.setTextColor(Color.rgb(40, 53, 49));
-        label.setTextSize(18);
+        label.setTextColor(dark ? Color.rgb(227, 236, 233) : Color.rgb(40, 53, 49));
+        label.setTextSize(16);
+        label.setLineSpacing(0, 1.45f);
         label.setGravity(Gravity.CENTER);
-        root.addView(label, new LinearLayout.LayoutParams(-1, 0, 1));
+        box.addView(label, new LinearLayout.LayoutParams(-1, -2));
         if (retry) {
             Button button = new Button(this);
-            button.setText("重新连接手机账本");
-            button.setOnClickListener(view -> io.execute(() -> waitForBackend(null)));
-            root.addView(button, new LinearLayout.LayoutParams(-1, -2));
+            button.setText(restartProcess ? "重新启动 OpenBill" : "重新连接手机账本");
+            LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(-1, -2);
+            btnParams.topMargin = Math.round(20 * dp);
+            button.setOnClickListener(view -> {
+                if (restartProcess) restartApp();
+                else io.execute(() -> waitForBackend(null));
+            });
+            box.addView(button, btnParams);
         }
+        root.addView(box, new LinearLayout.LayoutParams(-1, -1));
+    }
+
+    private void restartApp() {
+        Intent launch = getPackageManager().getLaunchIntentForPackage(getPackageName());
+        if (launch != null) {
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+            startActivity(launch);
+        }
+        finish();
+        android.os.Process.killProcess(android.os.Process.myPid());
     }
 
     private void waitForBackend(Bundle state) {
         for (int attempt = 0; attempt < 180 && !destroyed; attempt++) {
-            if (startupError != null) {
-                handler.post(() -> { if (!destroyed) showStatus(startupError, true); });
+            String err = LedgerRuntime.getStartupError();
+            if (err != null) {
+                handler.post(() -> { if (!destroyed) showStatus(err, true); });
                 return;
             }
             HttpURLConnection connection = null;
@@ -220,7 +233,7 @@ public final class MainActivity extends Activity {
                         // revoke a previously injected startup token.
                         String personalSession = NativeBridge.session();
                         if (personalSession == null) throw new Exception("personal owner unavailable");
-                        String html = new String(readBounded(stream, 1024 * 1024), StandardCharsets.UTF_8);
+                        String html = new String(LedgerRuntime.readBounded(stream, 1024 * 1024), StandardCharsets.UTF_8);
                         String script = "<script>window.__CYLEDGER_PERSONAL__=true;"
                             + "(()=>{const s=JSON.parse(" + JSONObject.quote(personalSession) + ");"
                             + "localStorage.setItem('ebk_user_token',s.token);"
@@ -243,8 +256,11 @@ public final class MainActivity extends Activity {
                     if (isLocal(request.getUrl().toString())) return false;
                     if (!request.isForMainFrame()) return true;
                     Uri uri = request.getUrl();
-                    if ("https".equals(uri.getScheme())) {
-                        new AlertDialog.Builder(MainActivity.this).setMessage("用浏览器打开此链接？")
+                    if ("https".equals(uri.getScheme()) || "http".equals(uri.getScheme())) {
+                        String host = uri.getHost() != null ? uri.getHost() : uri.toString();
+                        new AlertDialog.Builder(MainActivity.this)
+                            .setTitle("使用浏览器打开链接？")
+                            .setMessage(host + "\n" + uri.toString())
                             .setPositiveButton("打开", (dialog, which) -> {
                                 try { startActivity(new Intent(Intent.ACTION_VIEW, uri)); }
                                 catch (Exception error) { Toast.makeText(MainActivity.this, "没有可用的浏览器", Toast.LENGTH_SHORT).show(); }
@@ -318,8 +334,22 @@ public final class MainActivity extends Activity {
         if (splash == null) splash = new OpenBillSplash(this);
         stage.addView(splash, new FrameLayout.LayoutParams(-1, -1));
         root.addView(stage, new LinearLayout.LayoutParams(-1, -1));
-        if (state != null && web.restoreState(state) != null) return;
-        web.loadUrl(origin + "/personal"+(getIntent().getBooleanExtra("quickEntry",false)?"#!/transaction/add?type=3":""));
+        if (state != null && web.restoreState(state) != null) {
+            if (!pendingRoute.isEmpty()) {
+                String route = pendingRoute;
+                pendingRoute = "";
+                handler.post(() -> navigateTo(route));
+            }
+            return;
+        }
+        String initialRoute = pendingRoute;
+        pendingRoute = "";
+        web.loadUrl(origin + "/personal" + (initialRoute.isEmpty() ? "" : "#!" + initialRoute));
+    }
+
+    private void navigateTo(String route) {
+        if (web == null || route == null || route.isEmpty()) return;
+        web.evaluateJavascript("document.querySelector('.view-main')?.f7View?.router.navigate(" + JSONObject.quote(route) + ")", null);
     }
 
     boolean isLocalPage(String url) { return url!=null&&isLocal(url); }
@@ -338,11 +368,26 @@ public final class MainActivity extends Activity {
                 OpenBillSplash finished = splash;
                 splash = null;
                 checkingPage = false;
+                if (!pendingRoute.isEmpty()) {
+                    String route = pendingRoute;
+                    pendingRoute = "";
+                    navigateTo(route);
+                }
                 Runnable remove = () -> {
                     if (finished.getParent() instanceof ViewGroup) ((ViewGroup) finished.getParent()).removeView(finished);
                 };
-                if (android.animation.ValueAnimator.areAnimatorsEnabled()) finished.animate().alpha(0).setDuration(180).withEndAction(remove).start();
-                else remove.run();
+                if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
+                    finished.animate()
+                        .alpha(0f)
+                        .scaleX(1.025f)
+                        .scaleY(1.025f)
+                        .setDuration(220)
+                        .setInterpolator(new android.view.animation.PathInterpolator(0.22f, 1f, 0.36f, 1f))
+                        .withEndAction(remove)
+                        .start();
+                } else {
+                    remove.run();
+                }
             } else if (attempt < 200) handler.postDelayed(() -> revealLedger(attempt + 1), 100);
             else showStatus("账本界面未能打开，请重试。", true);
         });
@@ -367,75 +412,6 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void prepareAssets(File rootDirectory) throws Exception {
-        String revision;
-        try (InputStream stream = getAssets().open("revision.txt")) {
-            revision = new String(readBounded(stream, 1024), StandardCharsets.UTF_8);
-        }
-        File marker = new File(rootDirectory, "asset-revision");
-        if (marker.isFile()) {
-            try (InputStream stream = new FileInputStream(marker)) {
-                if (revision.equals(new String(readBounded(stream, 1024), StandardCharsets.UTF_8))) return;
-            }
-        }
-        File publicDirectory = new File(rootDirectory, "public");
-        if (!publicDirectory.isDirectory() && !publicDirectory.mkdirs()) throw new Exception("assets directory");
-        String prefix = publicDirectory.getCanonicalPath() + File.separator;
-        try (ZipInputStream zip = new ZipInputStream(getAssets().open("frontend.zip"))) {
-            ZipEntry entry;
-            while ((entry = zip.getNextEntry()) != null) {
-                File target = new File(publicDirectory, entry.getName());
-                if (!target.getCanonicalPath().startsWith(prefix)) throw new Exception("invalid bundled asset");
-                if (entry.isDirectory()) {
-                    if (!target.isDirectory() && !target.mkdirs()) throw new Exception("asset directory");
-                } else {
-                    File parent = target.getParentFile();
-                    if (!parent.isDirectory() && !parent.mkdirs()) throw new Exception("asset parent");
-                    try (OutputStream output = new FileOutputStream(target)) { copy(zip, output); }
-                }
-                zip.closeEntry();
-            }
-        }
-        try (InputStream stream = getAssets().open("defaults.ini"); OutputStream output = new FileOutputStream(new File(rootDirectory, "defaults.ini"))) {
-            copy(stream, output);
-        }
-        try (InputStream stream = getAssets().open("market-network.json"); OutputStream output = new FileOutputStream(new File(rootDirectory, "market-network.json"))) {
-            output.write(readBounded(stream, 4096));
-        }
-        try (OutputStream output = new FileOutputStream(marker)) { output.write(revision.getBytes(StandardCharsets.UTF_8)); }
-    }
-
-    private void prepareTrustStore(File directory) throws Exception {
-        TrustManagerFactory factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-        factory.init((KeyStore) null);
-        try (OutputStream output = new FileOutputStream(new File(directory, "ca-certificates.pem"))) {
-            for (TrustManager manager : factory.getTrustManagers()) {
-                if (!(manager instanceof X509TrustManager)) continue;
-                for (X509Certificate certificate : ((X509TrustManager) manager).getAcceptedIssuers()) {
-                    String pem = "-----BEGIN CERTIFICATE-----\n" + Base64.encodeToString(certificate.getEncoded(), Base64.NO_WRAP).replaceAll("(.{64})", "$1\n") + "\n-----END CERTIFICATE-----\n";
-                    output.write(pem.getBytes(StandardCharsets.US_ASCII));
-                }
-            }
-        }
-    }
-
-    private static void copy(InputStream input, OutputStream output) throws Exception {
-        byte[] buffer = new byte[32768];
-        int count;
-        while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-    }
-
-    private static byte[] readBounded(InputStream input, int limit) throws Exception {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        byte[] buffer = new byte[32768];
-        int count;
-        while ((count = input.read(buffer)) != -1) {
-            if (output.size() + count > limit) throw new Exception("file too large");
-            output.write(buffer, 0, count);
-        }
-        return output.toByteArray();
-    }
-
     private void download(String url, String userAgent, String name, String mime) {
         HttpURLConnection connection = null;
         try {
@@ -448,24 +424,31 @@ public final class MainActivity extends Activity {
             if (cookies != null) connection.setRequestProperty("Cookie", cookies);
             if (connection.getResponseCode() != 200) throw new Exception("download failed");
             byte[] data;
-            try (InputStream stream = connection.getInputStream()) { data = readBounded(stream, MAX_DOWNLOAD); }
+            try (InputStream stream = connection.getInputStream()) { data = LedgerRuntime.readBounded(stream, MAX_DOWNLOAD); }
             handler.post(() -> saveDownload(data, name, mime));
         } catch (Exception error) {
-            handler.post(() -> Toast.makeText(this, "导出失败，文件上限为 20 MB", Toast.LENGTH_LONG).show());
+            String msg = error.getMessage() != null && error.getMessage().contains("large")
+                ? "导出文件超过 20 MB，请缩小日期范围分批导出"
+                : "导出失败，请重试";
+            handler.post(() -> Toast.makeText(this, msg, Toast.LENGTH_LONG).show());
         } finally { if (connection != null) connection.disconnect(); }
     }
 
     private void readBlob(String url, String name, String mime) {
         String script = "window.__cyledgerDownload=null;fetch(" + JSONObject.quote(url) + ")"
-            + ".then(r=>r.blob()).then(b=>{if(b.size>" + MAX_DOWNLOAD + ")throw Error('large');"
+            + ".then(r=>r.blob()).then(b=>{if(b.size>" + MAX_DOWNLOAD + "){window.__cyledgerDownload={error:'large'};return;}"
             + "let r=new FileReader();r.onload=()=>window.__cyledgerDownload={data:r.result.split(',')[1],mime:b.type};"
-            + "r.onerror=()=>window.__cyledgerDownload={error:true};r.readAsDataURL(b)})"
-            + ".catch(()=>window.__cyledgerDownload={error:true});";
+            + "r.onerror=()=>window.__cyledgerDownload={error:'read'};r.readAsDataURL(b)})"
+            + ".catch(()=>window.__cyledgerDownload={error:'fetch'});";
         web.evaluateJavascript(script, result -> pollBlob(name, mime, 0));
     }
 
     private void pollBlob(String name, String mime, int attempt) {
-        if (destroyed || attempt >= 300) return;
+        if (destroyed) return;
+        if (attempt >= 300) {
+            Toast.makeText(this, "导出准备超时，请重试", Toast.LENGTH_LONG).show();
+            return;
+        }
         web.evaluateJavascript("JSON.stringify(window.__cyledgerDownload)", value -> {
             try {
                 Object raw = new JSONTokener(value).nextValue();
@@ -475,14 +458,23 @@ public final class MainActivity extends Activity {
                 }
                 JSONObject result = new JSONObject((String) raw);
                 web.evaluateJavascript("delete window.__cyledgerDownload", null);
-                if (result.optBoolean("error")) throw new Exception("blob download");
+                String errKind = result.optString("error", "");
+                if (!errKind.isEmpty() || result.optBoolean("error", false)) {
+                    String msg = "large".equals(errKind) ? "导出文件超过 20 MB，请缩小日期范围分批导出" : "导出失败，请重试";
+                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+                    return;
+                }
                 saveDownload(Base64.decode(result.getString("data"), Base64.DEFAULT), name, result.optString("mime", mime));
-            } catch (Exception error) { Toast.makeText(this, "导出失败，文件上限为 20 MB", Toast.LENGTH_LONG).show(); }
+            } catch (Exception error) { Toast.makeText(this, "导出失败，请重试", Toast.LENGTH_LONG).show(); }
         });
     }
 
     private void saveDownload(byte[] data, String name, String mime) {
-        if (destroyed || data.length > MAX_DOWNLOAD) return;
+        if (destroyed) return;
+        if (data.length > MAX_DOWNLOAD) {
+            Toast.makeText(this, "导出文件超过 20 MB，请缩小日期范围分批导出", Toast.LENGTH_LONG).show();
+            return;
+        }
         pendingDownload = data;
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -520,20 +512,32 @@ public final class MainActivity extends Activity {
 
     @Override public void onBackPressed() {
         if (loaded && web != null) {
-            web.evaluateJavascript("(function(){let modal=document.querySelector('.modal-in');if(modal){let close=modal.querySelector('.popup-close,.sheet-close,.dialog-button');if(close){close.click();return true;}let api=modal.f7Modal;if(api){api.close();return true;}}let v=document.querySelector('.view-main');if(v&&v.f7View&&v.f7View.router.history.length>1){v.f7View.router.back();return true;}return false;})()", result -> {
+            web.evaluateJavascript("(function(){return !!(window.__openbillHandleBack && window.__openbillHandleBack());})()", result -> {
                 if (!"true".equals(result)) {
-                    if (web.canGoBack()) web.goBack();
-                    else exitLedger();
+                    exitLedger();
                 }
             });
         } else exitLedger();
     }
 
-    private void exitLedger(){if(local.exitConfirm())new AlertDialog.Builder(this).setTitle("退出账本？").setNegativeButton("取消",null).setPositiveButton("退出",(d,w)->moveTaskToBack(true)).show();else moveTaskToBack(true);}
-    @Override protected void onStop(){local.stopped();super.onStop();}
-    @Override protected void onResume(){super.onResume();if(local!=null)local.resumed();}
-    @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);if(intent.getBooleanExtra("quickEntry",false)&&web!=null)local.ensureUnlocked(()->web.evaluateJavascript("document.querySelector('.view-main')?.f7View?.router.navigate('/transaction/add?type=3')",null));}
-    @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] results){super.onRequestPermissionsResult(request,permissions,results);if(request==804&&geoCallback!=null){boolean granted=false;for(int result:results)if(result==android.content.pm.PackageManager.PERMISSION_GRANTED)granted=true;geoCallback.invoke(geoOrigin,granted,false);geoCallback=null;}}
+    private void exitLedger() {
+        if (local != null && local.exitConfirm()) {
+            long now = android.os.SystemClock.elapsedRealtime();
+            if (now - lastBackPressAt <= 2000L) {
+                lastBackPressAt = 0;
+                moveTaskToBack(true);
+            } else {
+                lastBackPressAt = now;
+                Toast.makeText(this, "再按一次退出 OpenBill", Toast.LENGTH_SHORT).show();
+            }
+        } else {
+            moveTaskToBack(true);
+        }
+    }
+    @Override protected void onStop(){local.stopped();DcaScheduler.scheduleImmediate(getApplicationContext(),false);super.onStop();}
+    @Override protected void onResume(){super.onResume();if(local!=null)local.resumed();if(web!=null&&isLocal(web.getUrl()))web.evaluateJavascript("window.dispatchEvent(new CustomEvent('cyledger-notification-permission'))",null);}
+    @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);String route=requestedRoute(intent);if(!route.isEmpty()){if(web!=null&&loaded)local.ensureUnlocked(()->navigateTo(route));else pendingRoute=route;}}
+    @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] results){super.onRequestPermissionsResult(request,permissions,results);if(request==701&&web!=null&&isLocal(web.getUrl())){web.evaluateJavascript("window.dispatchEvent(new CustomEvent('cyledger-notification-permission'))",null);}if(request==804&&geoCallback!=null){boolean granted=false;for(int result:results)if(result==android.content.pm.PackageManager.PERMISSION_GRANTED)granted=true;geoCallback.invoke(geoOrigin,granted,false);geoCallback=null;}}
     @Override public void onConfigurationChanged(Configuration configuration) {
         super.onConfigurationChanged(configuration);
         applyInsets();

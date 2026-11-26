@@ -41,6 +41,37 @@ func TestImportFailureDoesNotPersistBatch(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, exists)
 }
+
+func TestImportBatchIdentitySurvivesLedgerAndFullClear(t *testing.T) {
+	for _, full := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ledger", true: "full"}[full], func(t *testing.T) {
+			f, expense := refundFixture(t)
+			if full {
+				require.NoError(t, f.engine.Sync2(&models.TransactionTagGroup{}, &models.UserCustomIcon{}, &models.UserCustomExchangeRate{}, &models.InsightsExplorer{}))
+			}
+			imported := &models.Transaction{Uid: f.uid, AccountId: f.bankID, Type: models.TRANSACTION_DB_TYPE_EXPENSE, Amount: 250, CategoryId: expense.CategoryId, TransactionTime: utils.GetMinTransactionTimeFromUnixTime(f.at + 4)}
+			batch := &ImportBatch{Id: "clear-import", Name: "虚构账单.csv", Fingerprint: "clear-import-hash"}
+			require.NoError(t, Transactions.BatchCreateTransactions(nil, f.uid, []*models.Transaction{imported}, nil, nil, batch))
+			if full {
+				require.NoError(t, Transactions.ClearAllUserData(nil, f.uid))
+			} else {
+				require.NoError(t, Transactions.DeleteAllTransactions(nil, f.uid, false))
+			}
+			_, exists, err := LedgerWorkspace.ExistingImportBatch(nil, f.uid, batch.Id, batch.Fingerprint)
+			require.True(t, exists)
+			require.ErrorIs(t, err, ErrLedgerItemConflict)
+			batches, err := LedgerWorkspace.ImportBatches(nil, f.uid)
+			require.NoError(t, err)
+			require.Len(t, batches, 1)
+			require.True(t, batches[0].Deleted)
+			var saved models.Transaction
+			has, err := f.engine.ID(imported.TransactionId).Get(&saved)
+			require.NoError(t, err)
+			require.True(t, has)
+			require.True(t, saved.Deleted)
+		})
+	}
+}
 func TestLedgerWishOwnershipRevisionAndNoBalanceMutation(t *testing.T) {
 	f, _ := feeFixture(t)
 	wish := models.LedgerWish{Name: "旅行", Icon: "star", Target: "10000.00", Initial: "50", Amount: "10", Ratio: "100", StartDate: "2026-01-01", Mode: "manual", Cycle: "month", Logs: []models.LedgerWishLog{{Id: "log", Date: "2026-01-02", Amount: "25", Note: "计划储蓄"}}}

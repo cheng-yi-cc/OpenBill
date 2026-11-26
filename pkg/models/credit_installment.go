@@ -16,8 +16,9 @@ type CreditInstallment struct {
 	Data           *CreditInstallmentData `xorm:"BLOB" json:"data"`
 }
 type CreditInstallmentData struct {
-	Principal string                     `json:"principal"`
-	TotalFee  string                     `json:"totalFee"`
+	Principal         string                     `json:"principal"`
+	OriginalPrincipal string                     `json:"originalPrincipal,omitempty"`
+	TotalFee          string                     `json:"totalFee"`
 	Periods   int                        `json:"periods"`
 	FirstDate string                     `json:"firstDate"`
 	Method    string                     `json:"method"`

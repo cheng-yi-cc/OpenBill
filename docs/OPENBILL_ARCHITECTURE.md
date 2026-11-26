@@ -21,11 +21,12 @@ Android WebView 中的 Vue 界面
 
 | 模型/字段 | 职责 |
 |---|---|
-| `Book` | 默认、归档、排序及显示偏好；流水/模板/投资事件携带账本归属，账户仍共用 |
+| `Book` | 默认、归档、隐藏、排序及显示偏好；独立保存按账本隐藏的分类 ID 和修订号，不改分类原有的生效账本白名单；隐藏账本只影响部分选择与管理列表，归档禁止新写入；流水/模板/投资事件携带账本归属，账户仍共用 |
 | `CalendarEvent` | 手动或借款账单关联的到期事项，完成状态不产生现金流水 |
 | `LocalLedgerItem` | 愿望、关键词规则、永久幂等的导入批次；不是第二份账户余额 |
 | `StatisticsBudget` / `StatisticsNote` / `StatisticsPreference` | 预算规则、账本与周期总结、各周期模块顺序及预算口径；修订号避免并发覆盖 |
-| `Transaction.DiscountAmount` / `TransactionTag.ParentTagId` | 原币优惠金额、两级标签关系；优惠不改实收付，两级关系同用户且无循环 |
+| `Transaction.DiscountAmount` / `LocationAddress` / `LinkedTransactionIds` / `BudgetExclusionMode` / `TransactionTag.ParentTagId` | 原币优惠、详细地址、手动关联账单、预算独立排除状态、两级标签；优惠不改实收付 |
+| `Refund` | 独立退款事实、关联原支出与退款流水、`offset`/`reduce` 分期协同模式、超额属性与请求幂等 |
 | `Account.Extend.AssetProfile` | 类型、分组、简称、卡号、夜间图标、资产统计选择、信用规则与借款日期；没有第二份余额 |
 | `AssetPresentation` | 隐藏、生效账本和提醒偏好，带修订号 |
 | `ReimbursementReceipt` | 原支出与到账流水关联；待报额由有效事实推导 |
@@ -71,6 +72,8 @@ Android `LocalBridge` 只允许本机页面且解锁后发起操作。备份同�
 
 **钱包收支**：沿用投资事件的 `INCOME/EXPENSE` 和 `wallet` 元数据，保存原币金额、确认的人民币历史汇率、分类和一至两种实际币种数量。`wallet_entries.go` 验证归属与分类，`pkg/investments/wallet.go` 回放数量和成本，`InvestmentService.Mutate` 在同一事务写入事件、修订、关联及一笔人民币收支账单；预览执行后整体回滚。收入取得成本为原金额乘历史汇率；混合支出的处置价值按实际数量分配，释放移动加权成本，未知成本继续未知。人民币统计账单记在受保护的系统账户，不再次形成资产或现金扣款；原币展示从事件读取，修订/撤销同步反转账单、重放持仓并使快照失效。
 
+钱包事件另存独立的收支排除、预算排除、隐藏金额、优惠金额、附件图片、地点名称及标签，并在同一事务写入关联账单；旧客户端修订省略字段时保留原值。原分类全局隐藏后，只有同账本同类型的原分类修订保留该分类，仍检查所有权和层级。普通草稿含钱包尚不支持的报销、地图坐标或不同币种的已输入金额时，切换入口会保留草稿并提示。
+
 **货币单位与估值**：钱包可切换人民币/美元展示和新增收支默认值，历史事件币种不随之改变。普通资金账户没有独立的历史币种字段，只有零余额、无全部历史（包括已删除）、无计价规则或共享额度依赖时允许修改币种，由 `account_currency.go` 在保存事务中复核。私人手动价格保存原币，当前人民币估值使用缓存汇率；历史快照重建只用快照原有的价格与汇率。稳定币每枚约 1 美元仅用于可修改的收付数量预填，不进入行情缓存。
 
 **加密每日定投**：用户在交易所账户显式启用规则后，`crypto_dca.go` 按保存时区生成逐日安排；客户端前台及重新打开时触发同步，不依赖手机永久后台。历史行情在数据库事务外获取，两个币种均使用指定分钟公开美元开盘价，人民币成本使用此前已公布的 ECB 汇率。随后在 `investments.go` 原有事务内复核归属、计划修订和待处理状态，回放扣款时及后续稳定币余额，原子保存买入、修订、幂等、快照失效和逐日完成标记。缺数据保留待处理，余额不足直接暂停并跳过尚未买入的安排；恢复只从未来时间继续。人工撤销不删除日期身份；账户删除的预览令牌覆盖计划，删除时同步停止计划。累计投入来自有效投资事实，持仓成本和收益复用原回放与统一估值。
@@ -93,6 +96,8 @@ Android `LocalBridge` 只允许本机页面且解锁后发起操作。备份同�
 
 手机分类和标签管理复用原有 Store 与接口，层级卡片不维护第二份分类/标签数据。`ManagementOrderPopup.vue` 只编辑顺序草稿，保存时提交原有移动接口并重新读取，取消不改变已保存顺序；查看账单通过原查询页传递分类或标签 ID。
 
+创建账本时可在同一事务中记录当时已有的收支一级分类 ID 作为隐藏快照；子分类显示状态单独保存，之后新建的分类不受旧快照影响。分类管理批量调整时以修订号比较更新，普通账本编辑不覆盖该范围；历史账单仍引用原分类。旧账本没有这些字段时默认不额外隐藏。
+
 统计资产走势由 `WealthTrend.vue` 统一普通与放大视图，`wealth-trend.ts` 保留原金额字符串，只在绘制坐标时转换数值。按会计日识别缺失日期并断开曲线，未知/失效净资产不按零绘制，不补造单点前后的历史。主题由 `MobileApp.vue` 同步到环境 Store；Framework7 手动 `setDarkMode` 不发出系统主题事件，不能仅依赖事件更新图表配色。
 
 `ledgerScope.ts` 用响应式值保存系统时区，在前台时钟同步、焦点恢复与可见性变化时重新读取；用户显式设置的有效会计时区优先，不被系统变化覆盖。当前日期跨日更新不覆盖用户选中的历史月份和日期。
@@ -106,7 +111,8 @@ Android `LocalBridge` 只允许本机页面且解锁后发起操作。备份同�
 | 方法 | 路径（省略 `/api/v1`） |
 |---|---|
 | GET | `/books/list` |
-| GET | `/ledger/items`、`/ledger/imports` |
+| GET | `/ledger/items`、`/ledger/relations`、`/ledger/imports` |
+| GET / POST | `/refunds`、`/refunds/create`、`/refunds/update`、`/refunds/excess`、`/refunds/delete` |
 | POST | `/ledger/items/save`、`/ledger/items/delete`、`/ledger/imports/undo` |
 | GET / POST | `/statistics/preferences` |
 | GET | `/statistics/budgets`、`/statistics/notes`、`/statistics/auxiliary` |
@@ -141,7 +147,9 @@ Android `LocalBridge` 只允许本机页面且解锁后发起操作。备份同�
 | POST | `/assets/deposits/sync` |
 | POST | `/books/create` |
 | POST | `/books/modify` |
+| POST | `/books/category-visibility` |
 | POST | `/books/move` |
+| POST | `/books/move-all` |
 | GET | `/investments/settings` |
 | GET | `/investments/dca` |
 | POST | `/investments/dca/save`、`/investments/dca/enabled`、`/investments/dca/sync` |
@@ -175,10 +183,12 @@ Android `LocalBridge` 只允许本机页面且解锁后发起操作。备份同�
 
 ## Android 运行与品牌资源
 
-Android 通过 JNI 在应用进程内运行相同后端，正式/QA 分别使用回环端口 18761/18762 和各自私有目录。个人会话仅由原生外壳交给本应用 WebView；正式包禁用调试和注册。`ReminderBridge`/`ReminderReceiver` 处理资产提醒，`DailyReminderReceiver` 处理每日记账提醒，`LedgerTileService` 打开手动记账；这些入口不能代替后台常驻服务。
+Android 通过 JNI 在应用进程内运行相同后端，正式/QA 分别使用回环端口 18761/18762 和各自私有目录。个人会话仅由原生外壳交给本应用 WebView；正式包禁用调试和注册。`ReminderBridge`/`ReminderReceiver` 处理资产提醒，`DailyReminderReceiver` 处理每日记账提醒，`DcaScheduler`/`DcaCheckJobService`/`DcaAlarmReceiver`/`DcaNotifier` 处理定投定时提醒与唤醒检查，`LedgerTileService` 打开手动记账；这些入口不能代替后台常驻服务。
 
-`MainActivity` 在 WebView 上覆盖原生 `OpenBillSplash`，账页展开及 O 圆弧动画与后端启动并行；检测到 Framework7 当前页面就绪后退出，失败时显示重试入口。动画最长 850 毫秒，不要求页面等待播放完毕，系统关闭动画时显示静态图形。Android 12 及以上使用透明系统占位图，由原生视图统一绘制品牌。图标源为 `public/img/openbill.svg`，Android 自适应图标与单色图标位于 `android/app/src/main/res/`。
+`MainActivity` 在 WebView 上覆盖原生 `OpenBillSplash`，账页展开及 O 圆弧动画与后端启动并行；检测到 Framework7 当前页面就绪后按统一缓动淡出，失败时显示重试入口。前端动效与无障碍降级由 `src/lib/motion.ts` 和 `src/styles/mobile/_motion.scss` 统一控制，同时尊重系统 `prefers-reduced-motion` 与应用内动态开关。Android 12 及以上使用透明系统占位图，由原生视图统一绘制品牌。图标源为 `public/img/openbill.svg`，Android 自适应图标与单色图标位于 `android/app/src/main/res/`。
 
 应用显示名称可更新，但包名、签名、SQLite 路径、原生桥和 `cyledger-mobile-backup-v1` 格式身份用于兼容，不能随品牌替换。`LocalBridge` 同时接受新 OpenBill 和旧 CYLedger 备份文件名。
 
 手机数据库和附件在应用私有目录；本机构建签名在 `.runtime/android-signing/`，不能提交仓库。启动时 XORM 同步模型，随后 `Books.MigrateAll` 为历史事实补默认账本。迁移前备份、恢复校验与回退见 [运维说明](OPENBILL_OPERATIONS.md)。仅构建 Android；保留共用 Go / Vue 代码，已移除独立电脑界面、服务启动和发布配置。
+
+报销支出在批量移动账本时，同事务移动有效报销到账流水，并检查关联流水及账户的编辑权限；到账流水不能脱离原支出单独移动。普通单笔编辑在已有到账时阻止单独更换账本，避免拆散关系。退款原支出和有效退款流水也在同一事务移动，并保留超额退款独立账本设置。整本迁移 `MoveAllTransactions` 在同一事务中读取并移动来源账本的普通流水、关联记录及有效投资事件，若投资事件存在跨账本关联则整体拒绝。

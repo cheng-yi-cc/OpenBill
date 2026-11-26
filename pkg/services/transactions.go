@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 	"time"
 
@@ -174,7 +175,13 @@ func (s *TransactionService) GetAllTransactionsInOneAccountWithAccountBalanceByM
 		} else if transaction.Type == models.TRANSACTION_DB_TYPE_INCOME {
 			totalInflows.Add(totalInflows, big.NewInt(transaction.Amount))
 		} else if transaction.Type == models.TRANSACTION_DB_TYPE_EXPENSE {
-			totalOutflows.Add(totalOutflows, big.NewInt(transaction.Amount))
+			if transaction.Amount < 0 {
+				// Refund cash flows are stored as negative expenses. Their
+				// actual direction in an account statement is an inflow.
+				totalInflows.Sub(totalInflows, big.NewInt(transaction.Amount))
+			} else {
+				totalOutflows.Add(totalOutflows, big.NewInt(transaction.Amount))
+			}
 		} else if transaction.Type == models.TRANSACTION_DB_TYPE_TRANSFER_OUT {
 			totalOutflows.Add(totalOutflows, big.NewInt(transaction.Amount))
 		} else if transaction.Type == models.TRANSACTION_DB_TYPE_TRANSFER_IN {
@@ -977,6 +984,20 @@ func (s *TransactionService) CreateScheduledTransactions(c core.Context, current
 
 // ModifyTransaction saves an existed transaction to database
 func (s *TransactionService) ModifyTransaction(c core.Context, transaction *models.Transaction, changeToTransfer bool, currentTagIdsCount int, addTagIds []int64, removeTagIds []int64, addPictureIds []int64, removePictureIds []int64) error {
+	return s.modifyTransaction(c, transaction, changeToTransfer, currentTagIdsCount, addTagIds, removeTagIds, addPictureIds, removePictureIds, nil)
+}
+
+// ModifyRefundExpense applies the ordinary revision and linked refund updates
+// in one transaction after checking all affected account edit boundaries.
+func (s *TransactionService) ModifyRefundExpense(c core.Context, actor RefundActor, transaction *models.Transaction, currentTagIdsCount int, addTagIds []int64, removeTagIds []int64, addPictureIds []int64, removePictureIds []int64) error {
+	if transaction == nil || !actor.valid(transaction.Uid) {
+		return investmentError("无法验证退款账单修改权限")
+	}
+	defer Investments.lock(transaction.Uid)()
+	return s.modifyTransaction(c, transaction, false, currentTagIdsCount, addTagIds, removeTagIds, addPictureIds, removePictureIds, &actor)
+}
+
+func (s *TransactionService) modifyTransaction(c core.Context, transaction *models.Transaction, changeToTransfer bool, currentTagIdsCount int, addTagIds []int64, removeTagIds []int64, addPictureIds []int64, removePictureIds []int64, refundActor *RefundActor) error {
 	if transaction.Uid <= 0 {
 		return errs.ErrUserIdInvalid
 	}
@@ -1032,7 +1053,7 @@ func (s *TransactionService) ModifyTransaction(c core.Context, transaction *mode
 	}
 
 	err := s.UserDataDB(transaction.Uid).DoTransaction(c, func(sess *xorm.Session) error {
-		if err := guardInvestmentTransactions(sess, transaction.Uid, []int64{transaction.TransactionId}, true); err != nil {
+		if err := guardInvestmentTransactions(sess, transaction.Uid, []int64{transaction.TransactionId}, true, refundActor != nil); err != nil {
 			return err
 		}
 		if err := InvalidateWealthSnapshots(sess, transaction.Uid, 0); err != nil {
@@ -1052,6 +1073,10 @@ func (s *TransactionService) ModifyTransaction(c core.Context, transaction *mode
 		if oldTransaction.TransferFeeParentId > 0 {
 			return investmentError("请通过原转账账单修改手续费")
 		}
+		if err := validateTransactionDetail(sess, transaction, oldTransaction); err != nil {
+			return err
+		}
+		updateCols = append(updateCols, "location_address", "linked_transaction_ids")
 		if err := validateTransferFee(transaction); err != nil {
 			return err
 		}
@@ -1064,6 +1089,13 @@ func (s *TransactionService) ModifyTransaction(c core.Context, transaction *mode
 			return bookErr
 		}
 		transaction.BookId = bookID
+		var refundCashIDs []int64
+		if refundActor != nil {
+			refundCashIDs, err = prepareRefundExpenseRevision(sess, *refundActor, oldTransaction, transaction)
+			if err != nil {
+				return err
+			}
+		}
 		if err := validateTransactionDiscount(transaction); err != nil {
 			return err
 		}
@@ -1225,12 +1257,21 @@ func (s *TransactionService) ModifyTransaction(c core.Context, transaction *mode
 			updateCols = append(updateCols, "related_account_id")
 			updateCols = append(updateCols, "related_account_amount")
 		}
+		if transaction.Type == models.TRANSACTION_DB_TYPE_MODIFY_BALANCE && transaction.Amount == oldTransaction.Amount {
+			transaction.RelatedAccountAmount = oldTransaction.RelatedAccountAmount
+		}
+		if err := guardMonetaryFlowHistory(sess, transaction.Uid, oldTransaction, transaction); err != nil {
+			return err
+		}
 
 		if transaction.HideAmount != oldTransaction.HideAmount {
 			updateCols = append(updateCols, "hide_amount")
 		}
 		if transaction.ExcludeFromStatistics != oldTransaction.ExcludeFromStatistics {
 			updateCols = append(updateCols, "exclude_from_statistics")
+		}
+		if transaction.BudgetExclusionMode != oldTransaction.BudgetExclusionMode {
+			updateCols = append(updateCols, "budget_exclusion_mode")
 		}
 		if transaction.ReimbursementAccountId != oldTransaction.ReimbursementAccountId {
 			updateCols = append(updateCols, "reimbursement_account_id")
@@ -1631,8 +1672,14 @@ func (s *TransactionService) ModifyTransaction(c core.Context, transaction *mode
 			return errs.ErrTransactionTypeInvalid
 		}
 
-		if err := s.removeTransferFee(sess, transaction.Uid, transaction.TransactionId); err != nil {
+		preserveFee, err := s.preserveUnchangedTransferFee(sess, oldTransaction, transaction)
+		if err != nil {
 			return err
+		}
+		if !preserveFee {
+			if err := s.removeTransferFee(sess, transaction.Uid, transaction.TransactionId); err != nil {
+				return err
+			}
 		}
 		if oldTransaction.DebtDueDate != "" && transaction.DebtDueDate == "" {
 			if _, err := sess.Where("uid=? AND transaction_id=?", transaction.Uid, transaction.TransactionId).Delete(&models.CalendarEvent{}); err != nil {
@@ -1642,8 +1689,28 @@ func (s *TransactionService) ModifyTransaction(c core.Context, transaction *mode
 		if err := syncTransactionMetadata(sess, transaction); err != nil {
 			return err
 		}
-		if err := s.createTransferFee(c, sess, transaction); err != nil {
-			return err
+		if !preserveFee {
+			if err := s.createTransferFee(c, sess, transaction); err != nil {
+				return err
+			}
+		}
+		if refundActor != nil {
+			if transaction.BookId != oldTransaction.BookId || transaction.CategoryId != oldTransaction.CategoryId {
+				n, err := sess.Where("uid=? AND deleted=?", transaction.Uid, false).In("transaction_id", refundCashIDs).
+					Cols("book_id", "category_id", "updated_unix_time").Update(&models.Transaction{BookId: transaction.BookId, CategoryId: transaction.CategoryId, UpdatedUnixTime: now})
+				if err != nil {
+					return err
+				}
+				if n != int64(len(refundCashIDs)) {
+					return ErrInvestmentConflict
+				}
+			}
+			if err := bumpRefundSiblings(sess, transaction.Uid, transaction.TransactionId, ""); err != nil {
+				return err
+			}
+			if _, err := syncRefundExcess(sess, transaction.Uid, transaction.TransactionId); err != nil {
+				return err
+			}
 		}
 		if transaction.ReimbursementAccountId > 0 || oldTransaction.ReimbursementAccountId > 0 || transaction.ReimbursementReceiptId != "" {
 			return refreshReimbursementBalances(sess, transaction.Uid)
@@ -1886,6 +1953,19 @@ func (s *TransactionService) MoveAllTransactionsBetweenAccounts(c core.Context, 
 	}
 
 	return s.UserDataDB(uid).DoTransaction(c, func(sess *xorm.Session) error {
+		var refundAccountTxs []models.Transaction
+		if err := sess.Where("uid=? AND deleted=?", uid, false).In("account_id", []int64{fromAccountId, toAccountId}).Find(&refundAccountTxs); err != nil {
+			return err
+		}
+		if len(refundAccountTxs) > 0 {
+			ids := make([]int64, 0, len(refundAccountTxs))
+			for _, tx := range refundAccountTxs {
+				ids = append(ids, tx.TransactionId)
+			}
+			if err := guardRefundTransactions(sess, uid, ids); err != nil {
+				return err
+			}
+		}
 		feeLinked, feeErr := sess.Where("uid=? AND deleted=? AND (account_id=? OR account_id=?) AND (transfer_fee_parent_id>0 OR transfer_fee_category_id>0)", uid, false, fromAccountId, toAccountId).Exist(&models.Transaction{})
 		if feeErr != nil {
 			return feeErr
@@ -2161,7 +2241,7 @@ func (s *TransactionService) DeleteTransaction(c core.Context, uid int64, transa
 
 	return s.UserDataDB(uid).DoTransaction(c, func(sess *xorm.Session) error { return s.deleteTransactionInSession(c, sess, uid, transactionId) })
 }
-func (s *TransactionService) deleteTransactionInSession(c core.Context, sess *xorm.Session, uid, transactionId int64) error {
+func (s *TransactionService) deleteTransactionInSession(c core.Context, sess *xorm.Session, uid, transactionId int64, clearedAccounts ...map[int64]bool) error {
 
 	now := time.Now().Unix()
 
@@ -2194,6 +2274,9 @@ func (s *TransactionService) deleteTransactionInSession(c core.Context, sess *xo
 		return err
 	} else if !has {
 		return errs.ErrTransactionNotFound
+	}
+	if err := guardMonetaryFlowHistory(sess, uid, oldTransaction, nil, clearedAccounts...); err != nil {
+		return err
 	}
 
 	if oldTransaction.TransferFeeParentId > 0 {
@@ -2330,7 +2413,7 @@ func (s *TransactionService) deleteTransactionInSession(c core.Context, sess *xo
 			return err
 		}
 	}
-	if err := s.removeTransferFee(sess, uid, transactionId); err != nil {
+	if err := s.removeTransferFee(sess, uid, transactionId, clearedAccounts...); err != nil {
 		return err
 	}
 	if oldTransaction.ReimbursementAccountId > 0 || oldTransaction.ReimbursementReceiptId != "" {
@@ -2344,7 +2427,13 @@ func (s *TransactionService) DeleteAllTransactions(c core.Context, uid int64, de
 	if uid <= 0 {
 		return errs.ErrUserIdInvalid
 	}
+	defer Investments.lock(uid)()
+	return s.UserDataDB(uid).DoTransaction(c, func(sess *xorm.Session) error {
+		return s.deleteAllTransactionsInSession(sess, uid, deleteAccount)
+	})
+}
 
+func (s *TransactionService) deleteAllTransactionsInSession(sess *xorm.Session, uid int64, deleteAccount bool) error {
 	now := time.Now().Unix()
 
 	updateModel := &models.Transaction{
@@ -2368,108 +2457,250 @@ func (s *TransactionService) DeleteAllTransactions(c core.Context, uid int64, de
 		DeletedUnixTime: now,
 	}
 
-	return s.UserDataDB(uid).DoTransaction(c, func(sess *xorm.Session) error {
-		if deleteAccount {
-			if _, err := sess.Where("uid=?", uid).Delete(&models.MonetaryIncomeDay{}); err != nil {
-				return err
-			}
-			if _, err := sess.Where("uid=?", uid).Delete(&models.MonetaryIncomeBinding{}); err != nil {
-				return err
-			}
-		} else if err := pauseMonetaryIncome(sess, uid, nil); err != nil {
+	if deleteAccount {
+		// Processed days remain as permanent identities even when their
+		// transactions and binding are cleared, preventing duplicate income.
+		if _, err := sess.Where("uid=?", uid).Delete(&models.MonetaryIncomeBinding{}); err != nil {
 			return err
 		}
-		if err := guardInvestmentTransactions(sess, uid, nil); err != nil {
-			return err
-		}
-		if _, err := sess.Where("uid=?", uid).Cols("paused").Update(&models.InvestmentPlan{Paused: true}); err != nil {
-			return err
-		}
-		if _, err := sess.Where("uid=? AND status=?", uid, "pending").Cols("status", "error").Update(&models.InvestmentOrder{Status: "cancelled", Error: "账务已清理"}); err != nil {
-			return err
-		}
-		if err := InvalidateWealthSnapshots(sess, uid, 0); err != nil {
-			return err
-		}
-		if _, err := sess.Where("uid=?", uid).Cols("closed").Update(&models.CreditInstallment{Closed: true}); err != nil {
-			return err
-		}
-		if _, err := sess.Where("uid=?", uid).Cols("closed").Update(&models.FixedDeposit{Closed: true}); err != nil {
-			return err
-		}
-		// Update all transactions to deleted
-		_, err := sess.Cols("deleted", "deleted_unix_time").Where("uid=? AND deleted=?", uid, false).Update(updateModel)
-
-		if err != nil {
-			return err
-		}
-
-		// Update all transaction tag index to deleted
-		_, err = sess.Cols("deleted", "deleted_unix_time").Where("uid=? AND deleted=?", uid, false).Update(tagIndexUpdateModel)
-
-		if err != nil {
-			return err
-		}
-
-		// Update all transaction pictures to deleted
-		_, err = sess.Cols("deleted", "deleted_unix_time").Where("uid=? AND deleted=?", uid, false).Update(pictureUpdateModel)
-
-		if err != nil {
-			return err
-		}
-
-		// Update all accounts to deleted or set amount to zero
-		_, err = sess.Cols("balance", "deleted", "deleted_unix_time").Where("uid=? AND deleted=?", uid, false).Update(accountUpdateModel)
-
-		if err != nil {
-			return err
-		}
-
-		return nil
-	})
-}
-
-// DeleteAllTransactionsOfAccount deletes all existed transactions of specific account from database
-func (s *TransactionService) DeleteAllTransactionsOfAccount(c core.Context, uid int64, accountId int64, pageCount int32) error {
-	if uid <= 0 {
-		return errs.ErrUserIdInvalid
-	}
-
-	if accountId <= 0 {
-		return errs.ErrAccountIdInvalid
-	}
-	// Stop new automatic income before the existing paginated clear begins.
-	if err := s.UserDataDB(uid).DoTransaction(c, func(sess *xorm.Session) error {
-		return pauseMonetaryIncome(sess, uid, []int64{accountId})
-	}); err != nil {
+	} else if err := pauseMonetaryIncome(sess, uid, nil); err != nil {
 		return err
 	}
-
-	transactions, err := s.GetAllSpecifiedTransactions(c, uid, 0, 0, 0, nil, []int64{accountId}, nil, false, "", "", core.MATCH_MODE_DEFAULT, false, pageCount, true)
+	if err := guardInvestmentTransactions(sess, uid, nil); err != nil {
+		return err
+	}
+	var systemAccounts []models.Account
+	if err := sess.Cols("account_id").Where("uid=? AND deleted=? AND system_role<>?", uid, false, "").Find(&systemAccounts); err != nil {
+		return err
+	}
+	for _, account := range systemAccounts {
+		has, err := sess.Where("uid=? AND deleted=? AND (account_id=? OR related_account_id=?)", uid, false, account.AccountId, account.AccountId).Exist(&models.Transaction{})
+		if err != nil {
+			return err
+		}
+		if has {
+			return ErrInvestmentLinked
+		}
+	}
+	if err := retireImportBatchesInSession(sess, uid); err != nil {
+		return err
+	}
+	if deleteAccount {
+		// Full data clearing must not remove scheduled templates before a
+		// protected ledger fails validation, or leave them behind if the
+		// ledger transaction rolls back.
+		if _, err := sess.Where("uid=? AND deleted=?", uid, false).Cols("deleted", "deleted_unix_time").Update(&models.TransactionTemplate{Deleted: true, DeletedUnixTime: now}); err != nil {
+			return err
+		}
+	}
+	if _, err := sess.Where("uid=?", uid).Cols("paused").Update(&models.InvestmentPlan{Paused: true}); err != nil {
+		return err
+	}
+	if _, err := sess.Where("uid=? AND status=?", uid, "pending").Cols("status", "error").Update(&models.InvestmentOrder{Status: "cancelled", Error: "账务已清理"}); err != nil {
+		return err
+	}
+	// A clear must not leave scheduled crypto purchases enabled or allow a
+	// pending day to execute afterwards. Preserve every day identity.
+	if _, err := sess.Where("uid=? AND enabled=?", uid, true).Cols("enabled", "status").Incr("revision", 1).Update(&models.CryptoDCAPlan{Enabled: false, Status: "账务已清理，定投已暂停"}); err != nil {
+		return err
+	}
+	if _, err := sess.Where("uid=? AND status=?", uid, "pending").Cols("status", "message").Update(&models.CryptoDCADay{Status: "skipped", Message: "账务已清理，未发生买入"}); err != nil {
+		return err
+	}
+	if err := InvalidateWealthSnapshots(sess, uid, 0); err != nil {
+		return err
+	}
+	if _, err := sess.Where("uid=?", uid).Cols("closed").Update(&models.CreditInstallment{Closed: true}); err != nil {
+		return err
+	}
+	var deposits []models.FixedDeposit
+	if err := sess.Cols("id").Where("uid=?", uid).Find(&deposits); err != nil {
+		return err
+	}
+	// Remove only reminders owned by these deposit records. Manual reminders
+	// and other users' events are independent of the cleared ledger.
+	for start := 0; start < len(deposits); start += 500 {
+		end := start + 500
+		if end > len(deposits) {
+			end = len(deposits)
+		}
+		ids := make([]string, 0, end-start)
+		for _, deposit := range deposits[start:end] {
+			ids = append(ids, deposit.Id)
+		}
+		if _, err := sess.Where("uid=?", uid).In("id", ids).Delete(&models.CalendarEvent{}); err != nil {
+			return err
+		}
+	}
+	if _, err := sess.Where("uid=?", uid).Cols("closed").Update(&models.FixedDeposit{Closed: true}); err != nil {
+		return err
+	}
+	// Update all transactions to deleted
+	_, err := sess.Cols("deleted", "deleted_unix_time").Where("uid=? AND deleted=?", uid, false).Update(updateModel)
 
 	if err != nil {
 		return err
 	}
 
-	if len(transactions) < 1 {
-		return nil
+	// Update all transaction tag index to deleted
+	_, err = sess.Cols("deleted", "deleted_unix_time").Where("uid=? AND deleted=?", uid, false).Update(tagIndexUpdateModel)
+
+	if err != nil {
+		return err
 	}
 
-	for i := 0; i < len(transactions); i++ {
-		transaction := transactions[i]
+	// Update all transaction pictures to deleted
+	_, err = sess.Cols("deleted", "deleted_unix_time").Where("uid=? AND deleted=?", uid, false).Update(pictureUpdateModel)
 
-		if transaction.Type == models.TRANSACTION_DB_TYPE_TRANSFER_IN {
-			err = s.DeleteTransaction(c, uid, transaction.RelatedId)
-		} else {
-			err = s.DeleteTransaction(c, uid, transaction.TransactionId)
-		}
+	if err != nil {
+		return err
+	}
 
-		if err != nil {
-			return err
-		}
+	// Update all accounts to deleted or set amount to zero
+	_, err = sess.Cols("balance", "deleted", "deleted_unix_time").Where("uid=? AND deleted=? AND system_role=?", uid, false, "").Update(accountUpdateModel)
+
+	if err != nil {
+		return err
 	}
 
 	return nil
+}
+
+// ClearAllUserData clears the same user-owned data as the legacy full-clear
+// endpoint, but commits every database mutation together.
+func (s *TransactionService) ClearAllUserData(c core.Context, uid int64) error {
+	if uid <= 0 {
+		return errs.ErrUserIdInvalid
+	}
+	defer Investments.lock(uid)()
+	return s.UserDataDB(uid).DoTransaction(c, func(sess *xorm.Session) error {
+		if err := s.deleteAllTransactionsInSession(sess, uid, true); err != nil {
+			return err
+		}
+		now := time.Now().Unix()
+		modelsToDelete := []any{
+			&models.TransactionCategory{Deleted: true, DeletedUnixTime: now},
+			&models.TransactionTag{Deleted: true, DeletedUnixTime: now},
+			&models.TransactionTagGroup{Deleted: true, DeletedUnixTime: now},
+			&models.UserCustomIcon{Deleted: true, DeletedUnixTime: now},
+			&models.InsightsExplorer{Deleted: true, DeletedUnixTime: now},
+		}
+		for _, item := range modelsToDelete {
+			if _, err := sess.Where("uid=? AND deleted=?", uid, false).Cols("deleted", "deleted_unix_time").Update(item); err != nil {
+				return err
+			}
+		}
+		if _, err := sess.Where("uid=? AND deleted_unix_time=?", uid, 0).Cols("deleted_unix_time").Update(&models.UserCustomExchangeRate{DeletedUnixTime: now}); err != nil {
+			return err
+		}
+		if _, err := sess.Where("uid=? AND kind<>?", uid, "import").Delete(&models.LocalLedgerItem{}); err != nil {
+			return err
+		}
+		_, err := sess.Where("uid=?", uid).Delete(&models.CalendarEvent{})
+		return err
+	})
+}
+
+// DeleteAllTransactionsOfAccount deletes all existed transactions of specific account from database
+func (s *TransactionService) DeleteAllTransactionsOfAccount(c core.Context, uid int64, accountId int64, _ int32) error {
+	if uid <= 0 {
+		return errs.ErrUserIdInvalid
+	}
+	if accountId <= 0 {
+		return errs.ErrAccountIdInvalid
+	}
+	defer Investments.lock(uid)()
+	return s.UserDataDB(uid).DoTransaction(c, func(sess *xorm.Session) error {
+		if err := guardSystemAccounts(sess, uid, []int64{accountId}); err != nil {
+			return err
+		}
+		hasDeposit, err := sess.Where("uid=? AND account_id=? AND closed=? AND settled=?", uid, strconv.FormatInt(accountId, 10), false, false).Exist(&models.FixedDeposit{})
+		if err != nil {
+			return err
+		}
+		if hasDeposit {
+			return investmentError("请先处理该账户未结算的定存，再清除账户账务")
+		}
+		var affected []models.Transaction
+		if err := sess.Where("uid=? AND deleted=? AND (account_id=? OR related_account_id=?)", uid, false, accountId, accountId).Desc("transaction_time").Find(&affected); err != nil {
+			return err
+		}
+		affectedIDSet := make(map[int64]bool, len(affected))
+		for _, transaction := range affected {
+			affectedIDSet[transaction.TransactionId] = true
+		}
+		var debtMovements []models.DebtMovement
+		if err := sess.Where("uid=?", uid).Find(&debtMovements); err != nil {
+			return err
+		}
+		extraInterestIDs := make([]int64, 0)
+		for _, movement := range debtMovements {
+			if (movement.DebtAccountId == accountId || affectedIDSet[movement.PrincipalTransactionId]) && movement.InterestTransactionId > 0 && !affectedIDSet[movement.InterestTransactionId] {
+				extraInterestIDs = append(extraInterestIDs, movement.InterestTransactionId)
+				affectedIDSet[movement.InterestTransactionId] = true
+			}
+		}
+		if len(extraInterestIDs) > 0 {
+			var extraTxs []models.Transaction
+			if err := sess.Where("uid=? AND deleted=?", uid, false).In("transaction_id", extraInterestIDs).Find(&extraTxs); err != nil {
+				return err
+			}
+			affected = append(affected, extraTxs...)
+		}
+		ids := make([]int64, 0, len(affected))
+		accountIDs := []int64{accountId}
+		for _, transaction := range affected {
+			ids = append(ids, transaction.TransactionId)
+			if transaction.AccountId > 0 {
+				accountIDs = append(accountIDs, transaction.AccountId)
+			}
+			if transaction.RelatedAccountId > 0 {
+				accountIDs = append(accountIDs, transaction.RelatedAccountId)
+			}
+		}
+		if err := guardSystemAccounts(sess, uid, accountIDs); err != nil {
+			return err
+		}
+		if len(ids) > 0 {
+			// Transfer fee children are removed only with their parent.
+			if err := guardInvestmentTransactions(sess, uid, ids, true); err != nil {
+				return err
+			}
+		}
+		if err := pauseMonetaryIncome(sess, uid, []int64{accountId}); err != nil {
+			return err
+		}
+		processed := make(map[int64]bool, len(affected))
+		for _, transaction := range affected {
+			if transaction.TransferFeeParentId > 0 {
+				continue
+			}
+			id := transaction.TransactionId
+			if transaction.Type == models.TRANSACTION_DB_TYPE_TRANSFER_IN {
+				id = transaction.RelatedId
+			}
+			if processed[id] {
+				continue
+			}
+			if err := s.deleteTransactionInSession(c, sess, uid, id, map[int64]bool{accountId: true}); err != nil {
+				return err
+			}
+			processed[id] = true
+		}
+		for _, transaction := range affected {
+			if transaction.TransferFeeParentId == 0 {
+				continue
+			}
+			active, err := sess.ID(transaction.TransactionId).Where("uid=? AND deleted=?", uid, false).Exist(&models.Transaction{})
+			if err != nil {
+				return err
+			}
+			if active {
+				return investmentError("请先处理关联转账手续费")
+			}
+		}
+		return InvalidateWealthSnapshots(sess, uid, 0)
+	})
 }
 
 // GetRelatedTransferTransaction returns the related transaction for transfer transaction
@@ -2492,6 +2723,7 @@ func (s *TransactionService) GetRelatedTransferTransaction(originalTransaction *
 		InvestmentEventId: originalTransaction.InvestmentEventId,
 		DebtDueDate:       originalTransaction.DebtDueDate, LocationName: originalTransaction.LocationName,
 		ExcludeFromStatistics: originalTransaction.ExcludeFromStatistics,
+		BudgetExclusionMode:   originalTransaction.BudgetExclusionMode,
 		BookId:                originalTransaction.BookId,
 		Uid:                   originalTransaction.Uid,
 		Deleted:               originalTransaction.Deleted,
@@ -2691,7 +2923,7 @@ func (s *TransactionService) GetAccountsAndCategoriesTotalInflowAndOutflow(c cor
 			finalConditionParams = append(finalConditionParams, "%%"+keyword+"%%")
 		}
 
-		sess := s.UserDataDB(uid).NewSession(c).Select("type, category_id, account_id, related_account_id, transaction_time, timezone_utc_offset, amount").Where(finalCondition, finalConditionParams...)
+		sess := s.UserDataDB(uid).NewSession(c).Select("transaction_id, type, category_id, account_id, related_account_id, transaction_time, timezone_utc_offset, amount").Where(finalCondition, finalConditionParams...)
 		sess = s.appendFilterTagIdsConditionToQuery(sess, uid, maxTransactionTime, minTransactionTime, tagFilters, noTags)
 
 		err := sess.Limit(pageCountForLoadTransactionAmounts, 0).OrderBy("transaction_time desc").Find(&transactions)
@@ -2710,6 +2942,9 @@ func (s *TransactionService) GetAccountsAndCategoriesTotalInflowAndOutflow(c cor
 		maxTransactionTime = transactions[len(transactions)-1].TransactionTime - 1
 	}
 
+	if err := applyRefundExpenseProjection(c, uid, allTransactions); err != nil {
+		return nil, err
+	}
 	transactionTotalAmountsMap := make(map[string]*models.TransactionTotalAmount)
 
 	for i := 0; i < len(allTransactions); i++ {
@@ -2749,6 +2984,27 @@ func (s *TransactionService) GetAccountsAndCategoriesTotalInflowAndOutflow(c cor
 		totalAmounts.Amount.Add(totalAmounts.Amount, big.NewInt(transaction.Amount))
 	}
 
+	excessRows, err := Investments.RefundExcessReportRows(c, uid, startTransactionTime, endTransactionTime, tagFilters, noTags, keyword, matchMode)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range excessRows {
+		zone := clientTimezone
+		if useTransactionTimezone {
+			zone = time.FixedZone("Transaction Timezone", int(row.TimezoneUtcOffset)*60)
+		}
+		localDateTime := utils.FormatUnixTimeToNumericLocalDateTime(utils.GetUnixTimeFromTransactionTime(row.TransactionTime), zone)
+		if (startLocalDateTime > 0 && localDateTime < startLocalDateTime) || (endLocalDateTime > 0 && localDateTime > endLocalDateTime) {
+			continue
+		}
+		key := fmt.Sprintf("refund_%d_%s", row.CategoryId, row.Currency)
+		item, exists := transactionTotalAmountsMap[key]
+		if !exists {
+			item = &models.TransactionTotalAmount{Type: models.TRANSACTION_DB_TYPE_INCOME, CategoryId: row.CategoryId, Currency: row.Currency, Unassigned: true, Amount: big.NewInt(0)}
+			transactionTotalAmountsMap[key] = item
+		}
+		item.Amount.Add(item.Amount, big.NewInt(row.Amount))
+	}
 	transactionTotalAmounts := make([]*models.TransactionTotalAmount, 0, len(transactionTotalAmountsMap))
 
 	for _, totalAmounts := range transactionTotalAmountsMap {
@@ -2823,7 +3079,7 @@ func (s *TransactionService) GetAccountsAndCategoriesMonthlyInflowAndOutflow(c c
 			finalConditionParams = append(finalConditionParams, "%%"+keyword+"%%")
 		}
 
-		sess := s.UserDataDB(uid).NewSession(c).Select("type, category_id, account_id, related_account_id, transaction_time, timezone_utc_offset, amount").Where(finalCondition, finalConditionParams...)
+		sess := s.UserDataDB(uid).NewSession(c).Select("transaction_id, type, category_id, account_id, related_account_id, transaction_time, timezone_utc_offset, amount").Where(finalCondition, finalConditionParams...)
 		sess = s.appendFilterTagIdsConditionToQuery(sess, uid, maxTransactionTime, minTransactionTime, tagFilters, noTags)
 
 		err := sess.Limit(pageCountForLoadTransactionAmounts, 0).OrderBy("transaction_time desc").Find(&transactions)
@@ -2842,6 +3098,9 @@ func (s *TransactionService) GetAccountsAndCategoriesMonthlyInflowAndOutflow(c c
 		maxTransactionTime = transactions[len(transactions)-1].TransactionTime - 1
 	}
 
+	if err := applyRefundExpenseProjection(c, uid, allTransactions); err != nil {
+		return nil, err
+	}
 	startYearMonth := startYear*100 + startMonth
 	endYearMonth := endYear*100 + endMonth
 	transactionsMonthlyAmountsMap := make(map[string]*models.TransactionTotalAmount)
@@ -2884,6 +3143,27 @@ func (s *TransactionService) GetAccountsAndCategoriesMonthlyInflowAndOutflow(c c
 		transactionAmounts.Amount.Add(transactionAmounts.Amount, big.NewInt(transaction.Amount))
 	}
 
+	excessRows, err := Investments.RefundExcessReportRows(c, uid, startTransactionTime, endTransactionTime, tagFilters, noTags, keyword, matchMode)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range excessRows {
+		zone := clientTimezone
+		if useTransactionTimezone {
+			zone = time.FixedZone("Transaction Timezone", int(row.TimezoneUtcOffset)*60)
+		}
+		yearMonth := utils.FormatUnixTimeToNumericYearMonth(utils.GetUnixTimeFromTransactionTime(row.TransactionTime), zone)
+		if (startYearMonth > 0 && yearMonth < startYearMonth) || (endYearMonth > 0 && yearMonth > endYearMonth) {
+			continue
+		}
+		key := fmt.Sprintf("%d_refund_%d_%s", yearMonth, row.CategoryId, row.Currency)
+		item, exists := transactionsMonthlyAmountsMap[key]
+		if !exists {
+			item = &models.TransactionTotalAmount{Type: models.TRANSACTION_DB_TYPE_INCOME, CategoryId: row.CategoryId, Currency: row.Currency, Unassigned: true, Amount: big.NewInt(0)}
+			transactionsMonthlyAmountsMap[key] = item
+		}
+		item.Amount.Add(item.Amount, big.NewInt(row.Amount))
+	}
 	for groupKey, transaction := range transactionsMonthlyAmountsMap {
 		groupKeyParts := strings.Split(groupKey, "_")
 		yearMonth, _ := utils.StringToInt32(groupKeyParts[0])
@@ -2924,6 +3204,9 @@ func (s *TransactionService) GetTransactionIds(transactions []*models.Transactio
 }
 
 func (s *TransactionService) doCreateTransaction(c core.Context, database *datastore.Database, sess *xorm.Session, transaction *models.Transaction, transactionTagIndexes []*models.TransactionTagIndex, tagIds []int64, pictureIds []int64, pictureUpdateModel *models.TransactionPictureInfo) error {
+	if err := validateTransactionDetail(sess, transaction, nil); err != nil {
+		return err
+	}
 	if err := validateTransferFee(transaction); err != nil {
 		return err
 	}
@@ -3023,6 +3306,10 @@ func (s *TransactionService) doCreateTransaction(c core.Context, database *datas
 		} else if otherTransactionExists {
 			return errs.ErrCannotAddTransactionBeforeBalanceModificationTransaction
 		}
+	}
+
+	if err := guardMonetaryFlowHistory(sess, transaction.Uid, nil, transaction); err != nil {
+		return err
 	}
 
 	// Insert transaction row
@@ -3297,7 +3584,7 @@ func (s *TransactionService) getAllTransactionsInSpecifiedDateRange(c core.Conte
 		finalConditionParams = append(finalConditionParams, minTransactionTime)
 		finalConditionParams = append(finalConditionParams, maxTransactionTime)
 
-		err := s.UserDataDB(uid).NewSession(c).Select("type, account_id, transaction_time, timezone_utc_offset, amount").Where(condition, finalConditionParams...).Limit(pageCountForLoadTransactionAmounts, 0).OrderBy("transaction_time desc").Find(&transactions)
+		err := s.UserDataDB(uid).NewSession(c).Select("transaction_id, type, account_id, transaction_time, timezone_utc_offset, amount").Where(condition, finalConditionParams...).Limit(pageCountForLoadTransactionAmounts, 0).OrderBy("transaction_time desc").Find(&transactions)
 
 		if err != nil {
 			return nil, err
@@ -3313,6 +3600,9 @@ func (s *TransactionService) getAllTransactionsInSpecifiedDateRange(c core.Conte
 		maxTransactionTime = transactions[len(transactions)-1].TransactionTime - 1
 	}
 
+	if err := applyRefundExpenseProjection(c, uid, allTransactions); err != nil {
+		return nil, err
+	}
 	return allTransactions, nil
 }
 
@@ -3711,6 +4001,12 @@ func (s *TransactionService) getRelatedUpdateColumns(updateCols []string) []stri
 }
 
 func (s *TransactionService) isCategoryValid(sess *xorm.Session, transaction *models.Transaction) error {
+	return s.isCategoryValidWithHidden(sess, transaction, false)
+}
+
+// allowHidden is reserved for a verified unchanged historical classification;
+// ownership, existence, hierarchy and transaction type are always validated.
+func (s *TransactionService) isCategoryValidWithHidden(sess *xorm.Session, transaction *models.Transaction, allowHidden bool) error {
 	if transaction.InvestmentEventId != "" {
 		return nil
 	}
@@ -3728,7 +4024,7 @@ func (s *TransactionService) isCategoryValid(sess *xorm.Session, transaction *mo
 			return errs.ErrTransactionCategoryNotFound
 		}
 
-		if category.Hidden {
+		if category.Hidden && !allowHidden {
 			return errs.ErrCannotUseHiddenTransactionCategory
 		}
 
@@ -3751,7 +4047,7 @@ func (s *TransactionService) isCategoryValid(sess *xorm.Session, transaction *mo
 			return errs.ErrTransactionCategoryNotFound
 		}
 
-		if parentCategory.Hidden {
+		if parentCategory.Hidden && !allowHidden {
 			return errs.ErrCannotUseHiddenTransactionCategory
 		}
 	}

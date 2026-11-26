@@ -36,3 +36,12 @@ Java_com_cyledger_android_NativeBridge_directNetwork(JNIEnv *env, jclass type, j
     CYLedgerDirectNetwork((unsigned long long)handle, (char *)dns);
     (*env)->ReleaseStringUTFChars(env, servers, dns);
 }
+
+JNIEXPORT jstring JNICALL
+Java_com_cyledger_android_NativeBridge_checkDca(JNIEnv *env, jclass type, jboolean sync) {
+    char *value = CYLedgerCheckDCA(sync ? 1 : 0);
+    if (value == NULL) return NULL;
+    jstring result = (*env)->NewStringUTF(env, value);
+    CYLedgerFree(value);
+    return result;
+}

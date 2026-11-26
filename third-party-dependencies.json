@@ -28,6 +28,13 @@
         "licenseUrl": "https://github.com/0xa3k5/web3icons/blob/ad3cbe05229db54931cd8b2c2a86662288a0ce50/packages/core/package.json"
     },
     {
+        "name": "Official provider brand assets (Gate, HTX, MEXC, OneKey, Bitget Wallet)",
+        "copyright": "Respective brand owners; used solely to identify user-selected account providers",
+        "url": "https://github.com/cheng-yi-cc/OpenBill/blob/main/licenses/crypto-platform-brand-NOTICE",
+        "license": "Proprietary brand assets; respective owners retain all rights",
+        "licenseUrl": "https://github.com/cheng-yi-cc/OpenBill/blob/main/licenses/crypto-platform-brand-NOTICE"
+    },
+    {
         "name": "Gin",
         "copyright": "Copyright (c) 2014 Manuel Martínez-Almeida",
         "url": "https://github.com/gin-gonic/gin",

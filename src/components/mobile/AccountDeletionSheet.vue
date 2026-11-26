@@ -7,10 +7,10 @@
                 <p v-if="loading" role="status">正在检查关联记录…</p>
                 <template v-else-if="preview">
                     <h2>删除“{{ preview.name }}”？</h2>
-                    <p v-if="related">该账户还有 {{ preview.transactionCount }} 笔流水、{{ preview.investmentCount }} 笔投资记录<span v-if="preview.templateCount">、{{ preview.templateCount }} 个记账模板（含周期记账）</span>。可以先处理关联记录，或确认后一并删除。</p>
-                    <p v-else>该账户没有关联交易，确认后将删除账户。</p>
+                    <p v-if="relatedSummary">该账户还有 {{ relatedSummary }}。可以先处理关联记录，或确认后一并删除。</p>
+                    <p v-else>该账户没有关联账单，确认后将直接删除账户。</p>
                     <p v-if="preview.subAccountCount">同时删除 {{ preview.subAccountCount }} 个子账户。</p>
-                    <p v-if="preview.dueCount || preview.depositCount">同时取消 {{ preview.dueCount }} 个到期事项与 {{ preview.depositCount }} 笔定存的后续收益和通知。</p>
+                    <p v-if="dueDepositSummary">同时取消 {{ dueDepositSummary }} 的后续收益和提醒。</p>
                     <p v-if="preview.installmentCount">同时结束 {{preview.installmentCount}} 个分期计划，取消未入账服务费。</p>
                     <p v-if="preview.cryptoDcaPlanCount">同时停止 {{ preview.cryptoDcaPlanCount }} 个加密货币定投计划；已入账记录随投资流水处理。</p>
                     <p v-if="preview.parentAccountName">这是最后一个子账户，空主账户“{{ preview.parentAccountName }}”也将删除。</p>
@@ -34,12 +34,29 @@ import type { AccountDeletionPreview } from '@/models/investment.ts';
 import { useTransactionsStore } from '@/stores/transaction.ts';
 import { useTransactionTemplatesStore } from '@/stores/transactionTemplate.ts';
 import { useAccountsStore } from '@/stores/account.ts';
+import { useI18nUIComponents } from '@/lib/ui/mobile.ts';
 import { useLedgerScopeStore } from '@/stores/ledgerScope.ts';
 
 const props = defineProps<{ opened: boolean; target: { id:string; name:string; kind:'cash'|'portfolio'; href:string }; immediate?:boolean }>();
 const emit = defineEmits<{ 'update:opened':[value:boolean]; deleted:[]; busy:[value:boolean] }>();
+const { showToast } = useI18nUIComponents();
 const confirming=ref(false), loading=ref(false), deleting=ref(false), error=ref(''), preview=ref<AccountDeletionPreview>();
 const related=computed(()=>!!preview.value && preview.value.transactionCount+preview.value.investmentCount+preview.value.templateCount+(preview.value.dueCount||0)+(preview.value.depositCount||0)+(preview.value.installmentCount||0)+(preview.value.cryptoDcaPlanCount||0)>0);
+const relatedSummary=computed(()=>{
+    const p=preview.value; if(!p)return '';
+    const parts:string[]=[];
+    if(p.transactionCount)parts.push(`${p.transactionCount} 笔流水`);
+    if(p.investmentCount)parts.push(`${p.investmentCount} 笔投资记录`);
+    if(p.templateCount)parts.push(`${p.templateCount} 个记账模板（含周期记账）`);
+    return parts.join('、');
+});
+const dueDepositSummary=computed(()=>{
+    const p=preview.value; if(!p)return '';
+    const parts:string[]=[];
+    if(p.dueCount)parts.push(`${p.dueCount} 个到期事项`);
+    if(p.depositCount)parts.push(`${p.depositCount} 笔定存`);
+    return parts.join('与 ');
+});
 let request=0;
 function close():void { if(!deleting.value) emit('update:opened',false); }
 function closed():void { request++; close(); }
@@ -60,7 +77,7 @@ async function remove():Promise<void> {
         useTransactionsStore().updateStoreInvalidState({transactionList:true,reconciliationStatement:true,accountList:true,overview:true,statistics:true,explorer:true});
         const templates=useTransactionTemplatesStore(); templates.updateTransactionTemplateListInvalidState(1,true);templates.updateTransactionTemplateListInvalidState(2,true);
         const scope=useLedgerScopeStore(); if(scope.accountId && !useAccountsStore().allAccountsMap[scope.accountId])scope.accountId='';
-        emit('update:opened',false); emit('deleted'); f7.toast.create({text:'账户已删除',closeTimeout:2000}).open();
+        emit('update:opened',false); emit('deleted'); showToast('账户已删除');
     }catch(cause){error.value=investmentError(cause);preview.value=undefined;}
     finally{deleting.value=false;emit('busy',false);}
 }

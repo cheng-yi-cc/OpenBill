@@ -11,6 +11,10 @@ type LedgerWorkspaceApi struct{}
 
 var LedgerWorkspace = &LedgerWorkspaceApi{}
 
+func (a *LedgerWorkspaceApi) Relations(c *core.WebContext) (any, *errs.Error) {
+	return investmentResponse(services.Transactions.Relations(c, c.GetCurrentUid(), c.Query("id")))
+}
+
 func (a *LedgerWorkspaceApi) Items(c *core.WebContext) (any, *errs.Error) {
 	return investmentResponse(services.LedgerWorkspace.Items(c, c.GetCurrentUid(), c.Query("kind")))
 }

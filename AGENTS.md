@@ -2,25 +2,25 @@
 
 ## 技术与边界
 
-- 这是 ezBookkeeping v2.0.0 的二次开发，保留 Go 模块路径、Vue、Vuetify、Framework7、Pinia 和 SQLite；不要另建无关前端或重写日常账务。
+- OpenBill 以一木记账为功能与交互参考，逐项检查并对齐已有功能，另支持加密货币资产；暂不开发自动记账，不做桌面小组件和云同步。保留 Go 模块路径、Vue、Vuetify、Framework7、Pinia 和 SQLite；重构日常账务时须保持历史数据及备份兼容，保留上游许可和版权声明。
 - 用户界面与新增项目文档默认简体中文，本位币固定为人民币；会计时区取用户设置。
 - 投资事实在 `pkg/services/investments.go` 原子提交，成本回放在 `pkg/investments`，公开行情在 `pkg/marketquotes`，统一估值在 `pkg/services/wealth.go`。
 - 加密每日定投仅由显式启用的交易所计划触发，买入和逐日完成记录在原投资事务内提交。历史币价与汇率缺失时待处理，余额不足直接暂停；恢复不补买暂停期间，修订或撤销保留日期防重身份，不向交易所下单。
 - 新接口所有数量、金额、价格和汇率均为十进制字符串。输入先限制格式和长度，再交给十进制库；禁止浮点参与成本运算。
 - 未知成本、缺失报价或历史汇率保持未知，不能当成零。普通估值行情不能生成收入或修改持仓数量；用户显式绑定的货币基金自动收益由 `pkg/services/monetary_income.go` 独立逐日结算，万份收益不得当作净值。
-- 手机资产列表与统计复用 `investment-scope.ts` 的账本/账户范围；搜索和隐藏只影响可见性，不改变汇总。缺报价的空字符串也保持未知，不传入十进制解析。
+- 手机资产列表与统计复用 `investment-scope.ts` 的账本/账户范围；搜索和隐藏只影响可见性，不改变汇总。缺报价的空字符串也保持未知，不传入十进制解析；多持仓汇总已知部分时明确标注“已知”与缺失项数量。
 - Framework7 页面根节点不要用异步变化的 `class` 切换业务样式，避免覆盖路由状态；可改用独立 `data-*` 属性。
 - 系统结算账户必须在旧接口、批量操作、账户合并、普通列表和资产汇总中受保护。
-- 钱包收支复用投资事件，在同一事务更新实际币种持仓及一笔人民币统计账单；系统账单不重复计入资产，原币展示来自原事件，禁止普通账单接口单独改删。账户单位切换不得重写历史币种，普通资金账户须由 `account_currency.go` 复核可改条件。
+- 钱包收支复用投资事件，在同一事务更新实际币种持仓及一笔人民币统计账单；系统账单不重复计入资产，原币展示来自原事件，禁止普通账单接口单独改删。已支持标签、地点名称、附件、优惠金额及收支/预算/隐藏开关，尚不支持报销、地图坐标和自动跨币换算。账户单位切换不得重写历史币种，普通资金账户须由 `account_currency.go` 复核可改条件。
 - 稳定币每枚约 1 美元只能用于可修改的收付数量预填，不能作为行情或历史汇率；手动价格保留原币，历史快照重建沿用原有价格与汇率。
 - 不记录密钥或完整财务数据，不把 `.runtime`、`runtime`、备份和测试令牌提交到仓库。
 - 报销到账、债务本金/利息、余额校准、分期费用与定存收益必须在对应服务中原子提交并防重；定存和分期不能再次增加本金，普通行情不能驱动这些入账。
-- `Account.Extend.AssetProfile` 只存展示与账户规则，不维护第二份余额；新增表模型为 `Book`、`CalendarEvent`、`AssetPresentation`、`ReimbursementReceipt`、`AssetAdjustment`、`DebtMovement`、`CreditInstallment`、`FixedDeposit`、`MonetaryIncomeBinding`、`MonetaryIncomeDay`、`StatisticsBudget`、`StatisticsNote`、`StatisticsPreference`、`LocalLedgerItem`、`InvestmentHoldingProfile`、`InvestmentPlan`、`InvestmentOrder`、`CryptoDCAPlan`、`CryptoDCADay`，与投资模型统一在 `cmd/database.go` 注册。
+- `Account.Extend.AssetProfile` 只存展示与账户规则，不维护第二份余额；新增表模型为 `Book`、`CalendarEvent`、`AssetPresentation`、`Refund`、`ReimbursementReceipt`、`AssetAdjustment`、`DebtMovement`、`CreditInstallment`、`FixedDeposit`、`MonetaryIncomeBinding`、`MonetaryIncomeDay`、`StatisticsBudget`、`StatisticsNote`、`StatisticsPreference`、`LocalLedgerItem`、`InvestmentHoldingProfile`、`InvestmentPlan`、`InvestmentOrder`、`CryptoDCAPlan`、`CryptoDCADay`，与投资模型统一在 `cmd/database.go` 注册。
 - 基金定投/待确认入账须通过 `investment_plans.go` 原子完成指令、投资事件和资金流水；暂停/删除计划或撤销事件不能移除每期防重身份。展示偏差不改真实盈亏，持仓数量/成本校准必须留下 `ADJUST` 事实。
 - 基金解绑、重绑、删除收益不得删除逐日防重记录；账户级联删除须核对预览令牌，保护转账对端余额和历史投资依赖。
 - 转账手续费与原转账同事务提交、修订、删除；借款约定日期关联日历事项，禁止脱离原账单独立改金额/日期。导入批次须永久幂等，撤回整体事务执行。
 - 预算由账务事实重算，不能维护另一份余额或受临时统计筛选影响；优惠不再次改实收付金额，一级含子级标签统计须按账单去重。预算、总结和统计偏好保存必须校验修订号。
-- API 在 `cmd/webserver.go` 注册：`/api/v1/books/*`、`calendar/*`、`ledger/*`、`statistics/*`、`assets/*`、`monetary-income/*`、`investments/*`、`wealth/*`；完整方法与字段以接口文档和代码为准。
+- API 在 `cmd/webserver.go` 注册：`/api/v1/books/*`、`calendar/*`、`ledger/*`、`refunds/*`、`statistics/*`、`assets/*`、`monetary-income/*`、`investments/*`、`wealth/*`；完整方法与字段以接口文档和代码为准。
 
 ## 本地运行与验证
 

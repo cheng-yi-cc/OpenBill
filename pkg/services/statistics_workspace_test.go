@@ -1,9 +1,14 @@
 package services
 
 import (
+	"database/sql"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/mayswind/ezbookkeeping/pkg/datastore"
+	"github.com/mayswind/ezbookkeeping/pkg/localbackup"
 	"github.com/mayswind/ezbookkeeping/pkg/models"
 	"github.com/stretchr/testify/require"
 )
@@ -83,6 +88,65 @@ func TestStatisticsSQLiteDiscountIsInformationalAndAtomic(t *testing.T) {
 	tx.Amount = -1000
 	require.NoError(t, Transactions.ModifyTransaction(nil, tx, false, 0, nil, nil, nil, nil))
 	require.Equal(t, int64(2001000), f.balance())
+}
+
+func TestBudgetExclusionLegacySQLiteAndIndependentUpdates(t *testing.T) {
+	f := newInvestmentDBFixture(t)
+	tx := addBookExpense(f, "", 1200, 1)
+	_, err := f.engine.ID(tx.TransactionId).Cols("exclude_from_statistics").Update(&models.Transaction{ExcludeFromStatistics: true})
+	require.NoError(t, err)
+	// Simulate a database created before the new column and the normal startup sync.
+	_, err = f.engine.Exec(`ALTER TABLE "transaction" DROP COLUMN budget_exclusion_mode`)
+	require.NoError(t, err)
+	require.NoError(t, datastore.Container.UserDataStore.SyncStructs(new(models.Transaction)))
+	stored, err := Transactions.GetTransactionByTransactionId(nil, f.uid, tx.TransactionId)
+	require.NoError(t, err)
+	require.True(t, stored.ExcludeFromStatistics)
+	require.True(t, stored.IsExcludedFromBudget())
+	require.True(t, stored.ToTransactionInfoResponse(nil, true).ExcludeFromBudget)
+	before := f.balance()
+	include := false
+	stored.SetBudgetExclusion(&include)
+	require.NoError(t, Transactions.ModifyTransaction(nil, stored, false, 0, nil, nil, nil, nil))
+	require.NoError(t, datastore.Container.UserDataStore.SyncStructs(new(models.Transaction)))
+	stored, err = Transactions.GetTransactionByTransactionId(nil, f.uid, tx.TransactionId)
+	require.NoError(t, err)
+	require.True(t, stored.ExcludeFromStatistics)
+	require.False(t, stored.IsExcludedFromBudget())
+	require.False(t, stored.ToTransactionInfoResponse(nil, true).ExcludeFromBudget)
+	require.Equal(t, before, f.balance())
+	stored.SetBudgetExclusion(nil)
+	stored.ExcludeFromStatistics = false
+	require.NoError(t, Transactions.ModifyTransaction(nil, stored, false, 0, nil, nil, nil, nil))
+	stored, err = Transactions.GetTransactionByTransactionId(nil, f.uid, tx.TransactionId)
+	require.NoError(t, err)
+	require.False(t, stored.IsExcludedFromBudget())
+	exclude := true
+	stored.SetBudgetExclusion(&exclude)
+	require.NoError(t, Transactions.ModifyTransaction(nil, stored, false, 0, nil, nil, nil, nil))
+	stored, err = Transactions.GetTransactionByTransactionId(nil, f.uid, tx.TransactionId)
+	require.NoError(t, err)
+	require.False(t, stored.ExcludeFromStatistics)
+	require.True(t, stored.IsExcludedFromBudget())
+	require.Equal(t, before, f.balance())
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "cyledger.ini"), []byte("[database]\ntype=sqlite3\n"), 0600))
+	archive := filepath.Join(t.TempDir(), "budget-backup.zip")
+	require.NoError(t, localbackup.Create(root, archive, []byte(`{}`), func(target string) error {
+		_, snapshotErr := f.engine.Exec("VACUUM INTO ?", target)
+		return snapshotErr
+	}))
+	stage, err := localbackup.Stage(archive, t.TempDir())
+	require.NoError(t, err)
+	db, err := sql.Open("sqlite3", filepath.Join(stage, "data", "cyledger.db"))
+	require.NoError(t, err)
+	defer db.Close()
+	var mode int
+	var excluded bool
+	err = db.QueryRow(`SELECT budget_exclusion_mode, exclude_from_statistics FROM "transaction" WHERE transaction_id=?`, tx.TransactionId).Scan(&mode, &excluded)
+	require.NoError(t, err)
+	require.Equal(t, 2, mode)
+	require.False(t, excluded)
 }
 
 func TestStatisticsSQLiteTagHierarchyCannotCycleCrossUsersOrOrphan(t *testing.T) {

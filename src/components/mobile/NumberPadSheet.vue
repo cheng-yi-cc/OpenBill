@@ -19,54 +19,37 @@
             </f7-popover>
 
             <div class="numpad-buttons">
-                <f7-button class="numpad-button numpad-button-num" @pointerup="inputNum(7)">
-                    <span class="numpad-button-text numpad-button-text-normal">{{ digits[7] }}</span>
+                <f7-button v-for="n in topRowDigits" :key="'t'+n" class="numpad-button numpad-button-num" @click="inputNum(n)">
+                    <span class="numpad-button-text numpad-button-text-normal">{{ digits[n] }}</span>
                 </f7-button>
-                <f7-button class="numpad-button numpad-button-num" @pointerup="inputNum(8)">
-                    <span class="numpad-button-text numpad-button-text-normal">{{ digits[8] }}</span>
+                <div class="numpad-button numpad-button-function numpad-button-split no-right-border">
+                    <button type="button" aria-label="乘" @click="setSymbol('×')">&times;</button>
+                    <button type="button" aria-label="除" @click="setSymbol('÷')">&divide;</button>
+                </div>
+                <f7-button v-for="n in [4, 5, 6]" :key="'m'+n" class="numpad-button numpad-button-num" @click="inputNum(n)">
+                    <span class="numpad-button-text numpad-button-text-normal">{{ digits[n] }}</span>
                 </f7-button>
-                <f7-button class="numpad-button numpad-button-num" @pointerup="inputNum(9)">
-                    <span class="numpad-button-text numpad-button-text-normal">{{ digits[9] }}</span>
-                </f7-button>
-                <f7-button class="numpad-button numpad-button-function no-right-border" @pointerup="setSymbol('×')">
-                    <span class="numpad-button-text numpad-button-text-normal">&times;</span>
-                </f7-button>
-                <f7-button class="numpad-button numpad-button-num" @pointerup="inputNum(4)">
-                    <span class="numpad-button-text numpad-button-text-normal">{{ digits[4] }}</span>
-                </f7-button>
-                <f7-button class="numpad-button numpad-button-num" @pointerup="inputNum(5)">
-                    <span class="numpad-button-text numpad-button-text-normal">{{ digits[5] }}</span>
-                </f7-button>
-                <f7-button class="numpad-button numpad-button-num" @pointerup="inputNum(6)">
-                    <span class="numpad-button-text numpad-button-text-normal">{{ digits[6] }}</span>
-                </f7-button>
-                <f7-button class="numpad-button numpad-button-function no-right-border" @pointerup="setSymbol('−')">
+                <f7-button class="numpad-button numpad-button-function no-right-border" @click="setSymbol('−')">
                     <span class="numpad-button-text numpad-button-text-normal">&minus;</span>
                 </f7-button>
-                <f7-button class="numpad-button numpad-button-num" @pointerup="inputNum(1)">
-                    <span class="numpad-button-text numpad-button-text-normal">{{ digits[1] }}</span>
+                <f7-button v-for="n in bottomRowDigits" :key="'b'+n" class="numpad-button numpad-button-num" @click="inputNum(n)">
+                    <span class="numpad-button-text numpad-button-text-normal">{{ digits[n] }}</span>
                 </f7-button>
-                <f7-button class="numpad-button numpad-button-num" @pointerup="inputNum(2)">
-                    <span class="numpad-button-text numpad-button-text-normal">{{ digits[2] }}</span>
-                </f7-button>
-                <f7-button class="numpad-button numpad-button-num" @pointerup="inputNum(3)">
-                    <span class="numpad-button-text numpad-button-text-normal">{{ digits[3] }}</span>
-                </f7-button>
-                <f7-button class="numpad-button numpad-button-function no-right-border" @pointerup="setSymbol('+')">
+                <f7-button class="numpad-button numpad-button-function no-right-border" @click="setSymbol('+')">
                     <span class="numpad-button-text numpad-button-text-normal">&plus;</span>
                 </f7-button>
-                <f7-button class="numpad-button numpad-button-num" @pointerup="inputDecimalSeparator()"
+                <f7-button class="numpad-button numpad-button-num" @click="inputDecimalSeparator()"
                         v-if="supportDecimalSeparator">
                     <span class="numpad-button-text numpad-button-text-normal">{{ decimalSeparator }}</span>
                 </f7-button>
-                <f7-button class="numpad-button numpad-button-num" @pointerup="inputDoubleNum(0)"
+                <f7-button class="numpad-button numpad-button-num" @click="inputDoubleNum(0)"
                         v-if="!supportDecimalSeparator">
                     <span class="numpad-button-text numpad-button-text-normal">{{ `${digits[0]}${digits[0]}` }}</span>
                 </f7-button>
-                <f7-button class="numpad-button numpad-button-num" @pointerup="inputNum(0)">
+                <f7-button class="numpad-button numpad-button-num" @click="inputNum(0)">
                     <span class="numpad-button-text numpad-button-text-normal">{{ digits[0] }}</span>
                 </f7-button>
-                <f7-button class="numpad-button numpad-button-num" :aria-label="tt('Delete')" @pointerup="backspace" @taphold="clear()">
+                <f7-button class="numpad-button numpad-button-num" :aria-label="tt('Delete')" @click="backspace" @taphold="clear()">
                     <span class="numpad-button-text numpad-button-text-normal">
                         <f7-icon class="icon-with-direction" f7="delete_left"></f7-icon>
                     </span>
@@ -91,6 +74,7 @@ import { AMOUNT_FACTOR } from '@/consts/numeral.ts';
 import { ALL_CURRENCIES } from '@/consts/currency.ts';
 import { isNumber } from '@/lib/common.ts';
 import { BIG_DECIMAL_ZERO, parseBigDecimal, isBigDecimal } from '@/lib/numeral.ts';
+import { useLedgerExperienceStore } from '@/stores/ledgerExperience.ts';
 import logger from '@/lib/logger.ts';
 
 const props = defineProps<{
@@ -120,6 +104,9 @@ const {
     appendDigitGroupingSymbolAndDecimalSeparator
 } = useI18n();
 const { showToast } = useI18nUIComponents();
+const experience = useLedgerExperienceStore();
+const topRowDigits = computed<number[]>(() => experience.preferences.keyboard === 'ascending' ? [1, 2, 3] : [7, 8, 9]);
+const bottomRowDigits = computed<number[]>(() => experience.preferences.keyboard === 'ascending' ? [7, 8, 9] : [1, 2, 3]);
 
 const isSupportClipboard = !!navigator.clipboard;
 
@@ -233,6 +220,7 @@ function getStringValue(value: BigDecimal, hideZero: boolean): string {
 }
 
 function inputNum(num: number): void {
+    experience.vibrate();
     if (!previousValue.value && currentSymbol.value === '−') {
         if (isNumber(props.minValue) && props.minValue >= 0) {
             return;
@@ -302,6 +290,7 @@ function inputDecimalSeparator(): void {
 }
 
 function setSymbol(symbol: string): void {
+    experience.vibrate();
     if (currentValue.value) {
         if (currentSymbol.value) {
             const lastFormulaCalcResult = confirm();
@@ -319,6 +308,7 @@ function setSymbol(symbol: string): void {
 }
 
 function backspace(): void {
+    experience.vibrate();
     if (!currentValue.value || currentValue.value.length < 1) {
         if (currentSymbol.value) {
             currentValue.value = previousValue.value;
@@ -397,6 +387,13 @@ function confirm(): boolean {
                 break;
             case '×':
                 finalValue = previous.multiply(current).divide(AMOUNT_FACTOR).truncate();
+                break;
+            case '÷':
+                if (current.isZero()) {
+                    showToast('除数不能为 0');
+                    return false;
+                }
+                finalValue = previous.multiply(AMOUNT_FACTOR).divide(current).truncate();
                 break;
             default:
                 finalValue = previous;
@@ -546,7 +543,7 @@ watch(() => props.flipNegative, (newValue) => {
     box-sizing: border-box;
     user-select: none;
     touch-action: manipulation;
-    transition: transform 0.01s ease;
+    transition: transform var(--cy-dur-fast, 150ms) var(--cy-ease-out, ease), background-color 90ms var(--cy-ease-out, ease);
 }
 
 .numpad-button-num {
@@ -556,10 +553,36 @@ watch(() => props.flipNegative, (newValue) => {
 .numpad-button-num:active,
 .numpad-button-function:active {
     background-color: var(--f7-button-pressed-bg-color, rgba(var(--f7-theme-color-rgb), 0.15));
+    transition-duration: 55ms;
+    transform: scale(0.96);
 }
 
 .numpad-button-function, .numpad-button-confirm {
     width: 20%;
+}
+
+.numpad-button-split {
+    flex-direction: row;
+    padding: 0;
+}
+
+.numpad-button-split button {
+    flex: 1;
+    height: 100%;
+    border: 0;
+    background: transparent;
+    color: var(--f7-color-black);
+    font-size: var(--ebk-numpad-normal-button-font-size);
+    padding: 0;
+    touch-action: manipulation;
+}
+
+.dark .numpad-button-split button {
+    color: var(--f7-color-white);
+}
+
+.numpad-button-split button + button {
+    border-left: 1px solid var(--f7-page-bg-color);
 }
 
 .numpad-button-num.active-state, .numpad-button-function.active-state {

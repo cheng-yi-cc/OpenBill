@@ -13,6 +13,7 @@ export interface LedgerPreferences {
     deleteImportedScreenshots: boolean; showAccountIcon: boolean; lineIcons: boolean; multiCurrency: boolean;
     navigationText: boolean; navigationStyle: 'floating' | 'glass' | 'fixed'; tabs: LedgerTab[];
     hideHero: boolean; hideAdd: boolean; monthStart: number; defaultAccountId: string;
+    calendarRememberBooks: boolean; calendarRememberedBooks: string[];
     categoryAccounts: Record<string, string>; historicalRemarks: boolean; lowBalance: boolean;
     vibration: boolean; keyboard: 'ascending' | 'descending'; pullAction: 'add' | 'refresh' | 'none';
     floatPosition: 'left' | 'right' | 'hidden'; floatAction: 'add' | 'import';
@@ -28,6 +29,7 @@ export function defaultLedgerPreferences(): LedgerPreferences {
         deleteImportedScreenshots: false, showTime: false, showOriginal: false, showAccountIcon: false, lineIcons: true, multiCurrency: true,
         navigationText: true, navigationStyle: 'floating', tabs: ['home', 'calendar', 'assets', 'statistics', 'settings'],
         hideHero: false, hideAdd: false, monthStart: 1, defaultAccountId: 'category', categoryAccounts: {},
+        calendarRememberBooks: false, calendarRememberedBooks: [],
         historicalRemarks: true, lowBalance: true, vibration: false, keyboard: 'ascending', pullAction: 'add',
         floatPosition: 'hidden', floatAction: 'add', exitConfirm: true, hideRecents: false,
         colorScheme: 'red-expense', accent: '#087f72', nightSchedule: false, nightStart: '20:00', nightEnd: '07:00',
@@ -49,6 +51,7 @@ export function parseLedgerPreferences(value: unknown): LedgerPreferences {
     };
     for (const [key, allowed] of Object.entries(choices)) if (allowed.includes(String(source[key]))) (result as unknown as Record<string, unknown>)[key] = source[key];
     if (Number.isInteger(source.monthStart) && Number(source.monthStart) >= 1 && Number(source.monthStart) <= 28) result.monthStart = Number(source.monthStart);
+    if (Array.isArray(source.calendarRememberedBooks)) result.calendarRememberedBooks = [...new Set(source.calendarRememberedBooks.filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 64))].slice(0, 1000);
     if (typeof source.defaultAccountId === 'string' && /^(category|last|[0-9]{1,20})$/.test(source.defaultAccountId)) result.defaultAccountId = source.defaultAccountId;
     if (typeof source.accent === 'string' && /^#[0-9a-f]{6}$/i.test(source.accent)) result.accent = source.accent;
     for (const key of ['nightStart', 'nightEnd'] as const) if (typeof source[key] === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(source[key])) result[key] = source[key];

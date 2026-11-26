@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { ledgerCategoryTotals, ledgerMoney, ledgerSignedAmount, ledgerTotals } from '../ledger-display.ts';
+import { ledgerAccountFlowTotals, ledgerCategoryTotals, ledgerMoney, ledgerSignedAmount, ledgerTotals } from '../ledger-display.ts';
+
+it('按实际资金方向汇总账户流水，转账和投资结算不混入首页收支', () => {
+    const flows = [
+        { type: 4, amount: '1', cny: '1', transferDirection: 'in' as const },
+        { type: 4, amount: '2', cny: '2', transferDirection: 'out' as const },
+        { type: 2, amount: '0.10', cny: '0.10', excludeFromStatistics: true },
+        { type: 3, amount: '0.20', cny: '0.20' },
+    ];
+    expect(ledgerAccountFlowTotals(flows)).toMatchObject({ income: '1.1', expense: '2.2', balance: '-1.1' });
+    expect(ledgerTotals(flows)).toMatchObject({ income: '0', expense: '0.2' });
+});
 
 describe('mobile ledger financial display', () => {
     it('excludes transfers and opening balances, nets expense refunds without floating point loss', () => {

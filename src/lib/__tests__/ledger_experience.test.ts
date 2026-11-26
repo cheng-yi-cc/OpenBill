@@ -5,7 +5,9 @@ import {unzipSync,strFromU8} from 'fflate';
 import {emptyLedgerSearchFilters,filterLedgerEntries} from '../ledger-search.ts';
 import {newLedgerWish,wishProgress} from '../ledger-workspace.ts';
 import {parseBillOCR} from '../ledger-ocr.ts';
-import {ledgerEntriesCSV,ledgerWorkbook} from '../ledger-export.ts';
+import {ledgerEntriesCSV,ledgerEntryRows,ledgerWorkbook} from '../ledger-export.ts';
+import {projectRefundEntry} from '../refund-ledger.ts';
+import {defaultLedgerPreferences,parseLedgerPreferences} from '../ledger-preferences.ts';
 import type {LedgerEntry} from '../mobile-ledger.ts';
 const zone='Asia/Shanghai';
 const entry=(patch:Partial<LedgerEntry>={}):LedgerEntry=>({id:'1',type:3,day:'2026-10-05',time:moment.tz('2026-10-05 12:00',zone).unix(),title:'早餐',primaryCategory:'餐饮',primaryCategoryId:'p',categoryId:'c',account:'现金',accountId:'a',bookId:'b',destinationAccountId:'0',currency:'CNY',amount:'12.34',cny:'12.34',hidden:false,comment:'公司 早餐',tags:['工作'],tagIds:['t'],investment:false,...patch});
@@ -33,6 +35,14 @@ describe('search and local import contracts',()=>{
   const xml=strFromU8(files['xl/worksheets/sheet1.xml']!);
   expect(xml).toContain('9007199254740993123');expect(xml).toContain('&amp; &lt;note&gt;');expect(xml).not.toContain('<f>');
  });
+ it('exports a refund excess as unassigned instead of the actual receiving account',()=>{
+  const cash=entry({id:'refund',amount:'-13',sourceAccountName:'到账账户'});
+  const category={id:'income',name:'其他收入',parentId:'0'};
+  const projection={kind:'cash' as const,expenseId:'original',refundId:'r',offsetAmount:'12',excessAmount:'1',excess:{categoryId:'income',bookId:'b',comment:'退款差额',tagIds:[],excludeFromStatistics:false,excludeFromBudget:false}};
+  const [income]=projectRefundEntry(cash,projection,{income:category},{},{b:'日常账本'});
+  expect(ledgerEntryRows([income!],zone)[1]?.[6]).toBe('无账户');
+  expect(cash.sourceAccountName).toBe('到账账户');
+ });
 });
 describe('wish progress derived from original facts',()=>{
  it('stops scheduled contributions at the deadline and never mutates transactions',()=>{
@@ -44,5 +54,18 @@ describe('wish progress derived from original facts',()=>{
   const facts=[entry({type:2,amount:'100',cny:'100'}),entry({amount:'20',cny:'20'}),entry({amount:'-5',cny:'-5'}),entry({bookId:'other',cny:'999'})];
   const before=JSON.stringify(facts);expect(wishProgress(wish,facts,{},moment.tz('2026-10-06',zone)).saved).toBe('42.50');expect(JSON.stringify(facts)).toBe(before);
   expect(wishProgress(wish,[...facts,entry({currency:'USD',cny:null})],{},moment.tz('2026-10-06',zone)).saved).toBeNull();
+ });
+});
+
+describe('calendar book preference compatibility',()=>{
+ it('retains valid book scopes through JSON and safely reads older or malformed settings',()=>{
+  const old=parseLedgerPreferences({version:1,showTime:true});
+  expect(old.calendarRememberBooks).toBe(false);
+  expect(old.calendarRememberedBooks).toEqual([]);
+  const stored={...defaultLedgerPreferences(),calendarRememberBooks:true,calendarRememberedBooks:['daily','archived']};
+  const restored=parseLedgerPreferences(JSON.parse(JSON.stringify(stored)));
+  expect(restored.calendarRememberBooks).toBe(true);
+  expect(restored.calendarRememberedBooks).toEqual(['daily','archived']);
+  expect(parseLedgerPreferences({calendarRememberBooks:true,calendarRememberedBooks:['daily','daily',null,'x'.repeat(65)]}).calendarRememberedBooks).toEqual(['daily']);
  });
 });

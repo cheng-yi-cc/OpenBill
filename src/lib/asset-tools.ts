@@ -8,14 +8,17 @@ import type { ApiResponse } from '@/core/api.ts';
 import type { CalendarEvent } from '@/lib/calendar-events.ts';
 import type { WealthSummary,InvestmentAccount } from '@/models/investment.ts';
 import type { Account } from '@/models/account.ts';
-import { LedgerDecimal } from '@/lib/ledger-display.ts';
+import { LedgerDecimal, ledgerCurrencyMoney } from '@/lib/ledger-display.ts';
+import { summarizeAmounts, combineAmountSummaries, type AmountSummary } from '@/lib/amount-summary.ts';
 export interface AssetRule { hidden:boolean; disabledBooks:string[] }
 export interface AssetPreferences { revision:string; rules:Record<string,AssetRule>; reminders:{enabled:boolean;credit:boolean;debt:boolean;deposit:boolean;advanceDays:number;minuteOfDay:number} }
 export interface FixedDeposit {receivedInterest?:string;closedDate?:string;id:string;accountId:string;bookId:string;categoryId:string;currency:string;principal:string;annualRate:string;term:number;unit:'day'|'month'|'year';startDate:string;maturityDate:string;expectedInterest:string;timeZone:string;note:string;settled:boolean;transactionId:string;closed:boolean}
+export interface BalanceAdjustmentDetails { bookId:string; categoryId:string; comment:string; tagIds:string[] }
+export const defaultBalanceAdjustmentDetails=():BalanceAdjustmentDetails=>({bookId:'',categoryId:'',comment:'余额校准',tagIds:[]});
 export const defaultAssetPreferences=():AssetPreferences=>({revision:'0',rules:{},reminders:{enabled:false,credit:true,debt:true,deposit:true,advanceDays:0,minuteOfDay:540}});
 async function request<T>(method:'get'|'post',path:string,data?:unknown):Promise<T>{const r=await axios.request<ApiResponse<T>>({method,url:`v1/${path}`,data});if(!r.data.success)throw Error('资产操作失败，请重试');return r.data.result;}
-export const assetTools={adjustBalance:(data:{accountId:string;balance:string;expectedBalance:string;bookId:string;countInStatistics:boolean;timeZone:string;requestId:string})=>request<{transactionId:string}>('post','assets/adjust-balance',data),preferences:()=>request<AssetPreferences>('get','assets/preferences'),savePreferences:(data:AssetPreferences)=>request<AssetPreferences>('post','assets/preferences',data),deposits:()=>request<FixedDeposit[]>('get','assets/deposits'),saveDeposit:(data:FixedDeposit)=>request<FixedDeposit>('post','assets/deposits/save',data),closeDeposit:(id:string)=>request<boolean>('post','assets/deposits/close',{id}),syncDeposits:()=>request<number>('post','assets/deposits/sync',{}),pending:()=>request<CalendarEvent[]>('get','calendar/pending')};
-export interface AssetItem {key:string;id:string;name:string;category:number;currency:string;balance:string|null;value:string|null;href:string;portfolio:boolean;hidden:boolean;unrealizedPnl:string|null;excluded?:boolean;group?:string;kind?:string}
+export const assetTools={adjustBalance:(data:{accountId:string;balance:string;expectedBalance:string;bookId:string;countInStatistics:boolean;timeZone:string;requestId:string;categoryId?:string;comment?:string;tagIds?:string[]})=>request<{transactionId:string}>('post','assets/adjust-balance',data),preferences:()=>request<AssetPreferences>('get','assets/preferences'),savePreferences:(data:AssetPreferences)=>request<AssetPreferences>('post','assets/preferences',data),deposits:()=>request<FixedDeposit[]>('get','assets/deposits'),saveDeposit:(data:FixedDeposit)=>request<FixedDeposit>('post','assets/deposits/save',data),closeDeposit:(id:string)=>request<boolean>('post','assets/deposits/close',{id}),syncDeposits:()=>request<number>('post','assets/deposits/sync',{}),pending:()=>request<CalendarEvent[]>('get','calendar/pending')};
+export interface AssetItem {key:string;id:string;name:string;category:number;currency:string;balance:string|null;value:string|null;href:string;portfolio:boolean;hidden:boolean;unrealizedPnl:string|null;excluded?:boolean;group?:string;kind?:string;valuation?:AmountSummary;holdingProfit?:AmountSummary}
 export function assetAccountGroup(account?: Pick<Account, 'category' | 'assetProfile'>): string {
  const profile=account?.assetProfile;
  return profile?.group||(profile?.kind==='prepaid'?'预付账户':profile?.kind==='secondhand'?'二手资产':profile?.kind==='reimbursement'?'报销':account?.category===3?'信贷账户':[5,6].includes(account?.category||0)?'债务':[7,9].includes(account?.category||0)?'投资理财':'资金账户');
@@ -30,12 +33,24 @@ export function groupAssetAccountRows<T extends {group?:string}>(rows:T[]):{name
 export function assetItems(summary:WealthSummary|undefined,portfolios:InvestmentAccount[],accounts:Record<string,Account>,preferences:AssetPreferences,bookIds:string[]=[]):AssetItem[]{
  if(!summary)return [];
  const result:AssetItem[]=summary.cashAccounts.map(a=>({key:`cash:${a.id}`,id:a.id,name:a.name,category:accounts[a.id]?.category||0,excluded:!!accounts[a.id]?.assetProfile.excludeFromTotal,group:accounts[a.id]?.assetProfile.group,kind:accounts[a.id]?.assetProfile.kind,currency:a.currency,balance:a.balance,value:a.value,href:accounts[a.id]?.assetProfile.kind==='reimbursement'?`/assets/reimbursements?id=${a.id}`:[5,6].includes(accounts[a.id]?.category||0)?`/account/debt?id=${a.id}`:`/account/detail?id=${a.id}`,portfolio:false,hidden:preferences.rules[`cash:${a.id}`]?.hidden||accounts[a.id]?.hidden||false,unrealizedPnl:'0'}));
- for(const a of portfolios){const p=summary.positions.filter(p=>p.accountId===a.id&&new LedgerDecimal(p.quantity).gt(0)&&holdingInBooks(p.profile||{accountId:p.accountId,bookIds:[]},preferences,bookIds));const value=decimalSum(p.map(p=>p.totalValue===undefined?p.marketValue:p.totalValue));result.push({key:`portfolio:${a.id}`,id:a.id,name:a.name,category:7,currency:'CNY',balance:value,value,href:['WALLET','EXCHANGE'].includes(a.kind)?`/crypto/account?id=${a.id}`:`/investments/ledger?accountId=${a.id}`,portfolio:true,hidden:preferences.rules[`portfolio:${a.id}`]?.hidden||false,unrealizedPnl:decimalSum(p.filter(p=>!p.profile?.excludeFromTotal).map(p=>p.unrealizedPnl))});}
+ for(const a of portfolios){
+  const p=summary.positions.filter(p=>p.accountId===a.id&&new LedgerDecimal(p.quantity).gt(0)&&!p.profile?.excludeFromTotal&&holdingInBooks(p.profile||{accountId:p.accountId,bookIds:[]},preferences,bookIds));
+  const valuation=summarizeAmounts(p.map(p=>p.totalValue===undefined?p.marketValue:p.totalValue));
+  const holdingProfit=summarizeAmounts(p.map(p=>p.unrealizedPnl));
+  result.push({key:`portfolio:${a.id}`,id:a.id,name:a.name,category:7,currency:'CNY',balance:valuation.value,value:valuation.value,valuation,holdingProfit,href:['WALLET','EXCHANGE'].includes(a.kind)?`/crypto/account?id=${a.id}`:`/investments/ledger?accountId=${a.id}`,portfolio:true,hidden:preferences.rules[`portfolio:${a.id}`]?.hidden||false,unrealizedPnl:holdingProfit.value});
+ }
  return result;
 }
 export function decimalSum(values:(string|null|undefined)[]):string|null{return values.some(v=>v==null)?null:values.reduce((sum,v)=>sum.plus(v!),new LedgerDecimal(0)).toString();}
-export function assetTotals(items:AssetItem[]){const live=items.filter(a=>!a.excluded),positive=live.filter(a=>a.value!=null&&!new LedgerDecimal(a.value).lt(0)),negative=live.filter(a=>a.value!=null&&new LedgerDecimal(a.value).lt(0)),unknown=live.some(a=>a.value==null);return {assets:unknown?null:decimalSum(positive.map(a=>a.value)),liabilities:unknown?null:decimalSum(negative.map(a=>new LedgerDecimal(a.value!).abs().toString())),net:unknown?null:decimalSum(live.map(a=>a.value)),missing:live.filter(a=>a.value==null).length};}
-interface NativeReminderBridge {status():string;requestPermission():void;replace(json:string):void;clear():void;test():void}
+export function assetTotals(items:AssetItem[]){
+ const summaries=items.filter(a=>!a.excluded).map(a=>a.valuation||summarizeAmounts([a.value]));
+ const total=combineAmountSummaries(summaries);
+ const values=summaries.flatMap(s=>s.value==null?[]:[new LedgerDecimal(s.value)]);
+ return {assets:total.value==null?null:summarizeAmounts(values.filter(v=>!v.lt(0)).map(v=>v.toString())).value,
+  liabilities:total.value==null?null:summarizeAmounts(values.filter(v=>v.lt(0)).map(v=>v.abs().toString())).value,
+  net:total.value,missing:total.missing};
+}
+interface NativeReminderBridge {status():string;requestPermission():void;replace(json:string):void;clear():void;test():void;notifyDca?(json:string):void;scheduleDca?(sync:boolean):void;testDca?():void}
 declare global {interface Window{CYLedgerReminders?:NativeReminderBridge}}
 let automationPending=false,lastAutomation=0;
 export async function syncAssetAutomationOnOpen(zone:string,force=false):Promise<void>{
@@ -46,11 +61,22 @@ export async function syncAssetAutomationOnOpen(zone:string,force=false):Promise
  finally{automationPending=false;}
 }
 export function notificationStatus():string{return window.CYLedgerReminders?.status()||'browser';}
+function reminderRoute(i: CalendarEvent, accounts: Record<string, Account>): string {
+ if (i.id.startsWith('credit:') || i.id.startsWith('annual:')) return `/account/credit?id=${encodeURIComponent(i.accountId)}`;
+ if (i.id.startsWith('debt:')) return `/account/debt?id=${encodeURIComponent(i.accountId)}`;
+ if (i.id.startsWith('deposit-') || i.kind === 'deposit') return `/assets/tool?tool=deposits${i.accountId ? `&accountId=${encodeURIComponent(i.accountId)}` : ''}`;
+ if (i.accountId && accounts[i.accountId]) {
+  const acc = accounts[i.accountId]!;
+  if (acc.category === 3) return `/account/credit?id=${encodeURIComponent(i.accountId)}`;
+  if ([5, 6].includes(acc.category)) return `/account/debt?id=${encodeURIComponent(i.accountId)}`;
+ }
+ return '/calendar/due';
+}
 export async function updateNativeReminders(preferences:AssetPreferences,accounts:Record<string,Account>,zone:string):Promise<void>{
  const bridge=window.CYLedgerReminders;if(!bridge)return;
  if(!preferences.reminders.enabled){bridge.clear();return;}
  const r=preferences.reminders,[manual,reports,debts]=await Promise.all([assetTools.pending(),creditAccounts.reports(zone),debtAccounts.reports()]),items=mergeDebtDue(mergeCreditDue(manual,reports),debts,accounts),now=Date.now();
- const reminders=items.filter(i=>i.kind==='deposit'?r.deposit:accounts[i.accountId]?.category===3?r.credit:r.debt).map(i=>({id:i.id,at:moment.tz(i.date,'YYYY-MM-DD',zone).subtract(r.advanceDays,'day').add(r.minuteOfDay,'minute').valueOf(),title:i.id.startsWith('annual:')?'信用卡年费提醒':i.kind==='deposit'?'定期存款到期提醒':'还款提醒',text:`${i.accountName} · ${i.date}到期 · ${i.currency} ${i.amount}`})).filter(i=>i.at>now);
+ const reminders=items.filter(i=>i.kind==='deposit'?r.deposit:accounts[i.accountId]?.category===3?r.credit:r.debt).map(i=>({id:i.id,at:moment.tz(i.date,'YYYY-MM-DD',zone).subtract(r.advanceDays,'day').add(r.minuteOfDay,'minute').valueOf(),title:i.id.startsWith('annual:')?'信用卡年费提醒':i.kind==='deposit'?'定期存款到期提醒':'还款提醒',text:`${i.accountName} · ${i.date}到期 · ${ledgerCurrencyMoney(i.amount,i.currency)}`,route:reminderRoute(i,accounts)})).filter(i=>i.at>now);
  bridge.replace(JSON.stringify(reminders));
 }
 
@@ -72,9 +98,9 @@ export function mergeDebtDue(events:CalendarEvent[],reports:DebtReport[],account
  const result=[...events];
  for(const report of reports){
   const account=accounts[report.accountId];
-  if(!account||account.category!==5||!report.nextDate||result.some(e=>e.accountId===account.id&&e.date===report.nextDate&&e.kind==='repayment'))continue;
+  if(!account||account.hidden||account.category!==5||!report.nextDate||result.some(e=>e.accountId===account.id&&e.date===report.nextDate&&e.kind==='repayment'))continue;
   const amount=new LedgerDecimal(account.balance).div(100).neg();
-  if(amount.gt(0))result.push({id:`debt:${account.id}`,accountId:account.id,accountName:account.name,bookId:'',currency:account.currency,kind:'repayment',date:report.nextDate,amount:amount.toFixed(2),note:'借入待还',completed:false});
+  if(amount.gt(0))result.push({id:`debt:${account.id}`,accountId:account.id,accountName:account.name,bookId:'',currency:account.currency,kind:'repayment',date:report.nextDate,amount:amount.toFixed(2),note:'债务待还',completed:false});
  }
  return result.sort((a,b)=>a.date.localeCompare(b.date));
 }

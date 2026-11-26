@@ -1,5 +1,5 @@
 <template>
-    <label class="cy-book-picker" :class="{ 'cy-book-picker-compact': compact }"><span v-if="!compact">账本</span>
+    <label v-if="available.length > 1 || error" class="cy-book-picker" :class="{ 'cy-book-picker-compact': compact }"><span v-if="!compact">账本</span>
         <select :value="modelValue" aria-label="本笔记账所属账本" :disabled="disabled" @change="$emit('update:modelValue', ($event.target as HTMLSelectElement).value)">
             <option disabled value="">选择账本</option>
             <option v-for="book in available" :key="book.id" :value="book.id">{{ book.icon }} {{ book.name }}{{ book.archived ? '（已归档）' : '' }}</option>
@@ -14,7 +14,7 @@ import { investmentError } from '@/lib/investments.ts';
 const props = defineProps<{ modelValue: string; disabled?: boolean; compact?: boolean }>();
 defineEmits<{ 'update:modelValue': [value: string] }>();
 const books = useBooksStore(), error = ref('');
-const available = computed(() => books.allBooks.filter(book => !book.archived || book.id === props.modelValue));
+const available = computed(() => books.allBooks.filter(book => (!book.archived && !book.hidden) || book.id === props.modelValue));
 onMounted(() => { void books.loadBooks().catch(cause => { error.value = investmentError(cause); }); });
 </script>
 <style scoped>

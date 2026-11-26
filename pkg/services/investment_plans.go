@@ -2,7 +2,7 @@ package services
 
 import (
 	"encoding/json"
-
+	"sort"
 	"strconv"
 	"time"
 
@@ -363,9 +363,19 @@ func (s *InvestmentService) completeInvestmentOrder(c core.Context, uid int64, i
 	return result, err
 }
 
+type FundDCAAlert struct {
+	CashAccountId   string   `json:"cashAccountId"`
+	CashAccountName string   `json:"cashAccountName"`
+	Balance         string   `json:"balance"`
+	Required        string   `json:"required"`
+	InsufficientNow bool     `json:"insufficientNow"`
+	PlanNames       []string `json:"planNames"`
+}
+
 type InvestmentSyncResult struct {
-	Created int `json:"created"`
-	Pending int `json:"pending"`
+	Created int            `json:"created"`
+	Pending int            `json:"pending"`
+	Alerts  []FundDCAAlert `json:"alerts"`
 }
 
 func (s *InvestmentService) SyncInvestmentPlans(c core.Context, uid int64, force bool) (*InvestmentSyncResult, error) {
@@ -507,7 +517,7 @@ func (s *InvestmentService) syncInvestmentPlansAt(c core.Context, uid int64, for
 					result.Pending--
 					continue
 				}
-				status = e.Error()
+				status = localizeReplayError(nil, uid, e)
 			}
 		}
 		if len(status) > 300 {
@@ -518,5 +528,181 @@ func (s *InvestmentService) syncInvestmentPlansAt(c core.Context, uid int64, for
 			return nil, err
 		}
 	}
+	alerts, err := s.FundDCAAlerts(c, uid, now)
+	if err != nil {
+		return nil, err
+	}
+	result.Alerts = alerts
 	return result, nil
+}
+
+// FundDCAAlerts evaluates pending fund DCA orders and upcoming 3-day fund DCA
+// plans against asset CNY cash account balances without creating second balances.
+func (s *InvestmentService) FundDCAAlerts(c core.Context, uid int64, now time.Time) ([]FundDCAAlert, error) {
+	sess := s.UserDataDB(uid).NewSession(c)
+	defer sess.Close()
+	plans := []models.InvestmentPlan{}
+	if err := sess.Where("uid=? AND paused=? AND deleted=?", uid, false, false).Asc("id").Find(&plans); err != nil {
+		return nil, err
+	}
+	orders := []models.InvestmentOrder{}
+	if err := sess.Where("uid=? AND status=? AND type=?", uid, "pending", investments.Buy).Asc("trade_date", "id").Find(&orders); err != nil {
+		return nil, err
+	}
+	if len(plans) == 0 && len(orders) == 0 {
+		return []FundDCAAlert{}, nil
+	}
+	activePlans := map[string]models.InvestmentPlan{}
+	for _, p := range plans {
+		activePlans[p.Id] = p
+	}
+	var accounts []models.Account
+	if err := sess.Where("uid=? AND deleted=? AND system_role=?", uid, false, "").Find(&accounts); err != nil {
+		return nil, err
+	}
+	cashAccounts := map[string]models.Account{}
+	for _, a := range accounts {
+		cashAccounts[strconv.FormatInt(a.AccountId, 10)] = a
+	}
+	var instruments []models.InvestmentInstrument
+	if err := sess.Where("uid=?", uid).Find(&instruments); err != nil {
+		return nil, err
+	}
+	instrumentNames := map[string]string{}
+	for _, ins := range instruments {
+		instrumentNames[ins.Id] = ins.Name
+	}
+	var profiles []models.InvestmentHoldingProfile
+	if err := sess.Where("uid=?", uid).Find(&profiles); err != nil {
+		return nil, err
+	}
+	profileNames := map[string]string{}
+	for _, prof := range profiles {
+		if prof.Name != "" {
+			profileNames[prof.AccountId+":"+prof.InstrumentId] = prof.Name
+		}
+	}
+	displayName := func(accountID, instrumentID string) string {
+		if name := profileNames[accountID+":"+instrumentID]; name != "" {
+			return name
+		}
+		if name := instrumentNames[instrumentID]; name != "" {
+			return name
+		}
+		return instrumentID
+	}
+
+	type pool struct {
+		account     models.Account
+		cashID      string
+		pendingReq  decimal.Decimal
+		upcomingReq decimal.Decimal
+		failedNow   bool
+		names       map[string]struct{}
+	}
+	pools := map[string]*pool{}
+	ensurePool := func(cashID string) *pool {
+		a, ok := cashAccounts[cashID]
+		if !ok || !a.Category.IsAsset() || a.Currency != "CNY" {
+			return nil
+		}
+		p := pools[cashID]
+		if p == nil {
+			p = &pool{account: a, cashID: cashID, names: map[string]struct{}{}}
+			pools[cashID] = p
+		}
+		return p
+	}
+
+	seenOrderKeys := map[string]bool{}
+	for _, o := range orders {
+		_, activePlan := activePlans[o.PlanId]
+		insufficientErr := o.Error == "资金账户余额不足"
+		if !activePlan && !(o.PlanId != "" && insufficientErr) {
+			continue
+		}
+		if o.RequestKey != "" {
+			seenOrderKeys[o.RequestKey] = true
+		}
+		target := ensurePool(o.CashAccountId)
+		if target == nil {
+			continue
+		}
+		if o.Amount != "" {
+			if amt, e := decimal.NewFromString(o.Amount); e == nil && amt.IsPositive() {
+				target.pendingReq = target.pendingReq.Add(amt)
+			}
+		}
+		if insufficientErr {
+			target.failedNow = true
+		}
+		target.names[displayName(o.AccountId, o.InstrumentId)] = struct{}{}
+	}
+
+	for _, p := range plans {
+		target := ensurePool(p.CashAccountId)
+		if target == nil {
+			continue
+		}
+		zone, e := time.LoadLocation(p.TimeZone)
+		if e != nil {
+			continue
+		}
+		amt, e := decimal.NewFromString(p.Amount)
+		if e != nil || !amt.IsPositive() {
+			continue
+		}
+		end := now.In(zone).AddDate(0, 0, 3)
+		date := p.NextDate
+		if date == "" {
+			date = p.StartDate
+		}
+		for i := 0; i < 16 && date != "" && (p.EndDate == "" || date <= p.EndDate); i++ {
+			at, e := time.ParseInLocation("2006-01-02 15:04", date+" "+p.Time, zone)
+			if e != nil || at.After(end) {
+				break
+			}
+			key := "plan:" + p.Id + ":" + date
+			if !seenOrderKeys[key] {
+				if at.After(now) {
+					target.upcomingReq = target.upcomingReq.Add(amt)
+				} else {
+					target.pendingReq = target.pendingReq.Add(amt)
+				}
+				target.names[displayName(p.AccountId, p.InstrumentId)] = struct{}{}
+			}
+			next := nextInvestmentDate(date, p.Cycle, p.StartDate)
+			if next == date {
+				break
+			}
+			date = next
+		}
+	}
+
+	alerts := []FundDCAAlert{}
+	for _, target := range pools {
+		balance := decimal.NewFromInt(target.account.Balance).Shift(-2)
+		totalReq := target.pendingReq.Add(target.upcomingReq)
+		insufficientNow := target.failedNow || (target.pendingReq.IsPositive() && balance.LessThan(target.pendingReq))
+		if !insufficientNow && (!totalReq.IsPositive() || !balance.LessThan(totalReq)) {
+			continue
+		}
+		planNames := make([]string, 0, len(target.names))
+		for name := range target.names {
+			planNames = append(planNames, name)
+		}
+		sort.Strings(planNames)
+		alerts = append(alerts, FundDCAAlert{
+			CashAccountId:   target.cashID,
+			CashAccountName: target.account.Name,
+			Balance:         balance.StringFixed(2),
+			Required:        totalReq.StringFixed(2),
+			InsufficientNow: insufficientNow,
+			PlanNames:       planNames,
+		})
+	}
+	sort.Slice(alerts, func(i, j int) bool {
+		return alerts[i].CashAccountId < alerts[j].CashAccountId
+	})
+	return alerts, nil
 }

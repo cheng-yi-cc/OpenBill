@@ -7,6 +7,11 @@ export const DEBT_OPERATIONS: { value: DebtOperation; label: string }[] = [
     { value: 'borrow', label: '借入' }, { value: 'lend', label: '借出' },
     { value: 'repay', label: '还款' }, { value: 'collect', label: '收回' }
 ];
+export function ordinaryTransferCategory(categories: { id: string; name: string }[], previousId: string): string {
+    const debtLabels = new Set(DEBT_OPERATIONS.map(item => item.label));
+    const ordinary = categories.filter(category => !debtLabels.has(category.name));
+    return ordinary.find(category => category.id === previousId)?.id || ordinary[0]?.id || '';
+}
 export function debtAccountCategory(operation: DebtOperation): number {
     return operation === 'borrow' || operation === 'repay' ? AccountCategory.DebtAccount.type : AccountCategory.Receivables.type;
 }

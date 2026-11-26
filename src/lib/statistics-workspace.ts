@@ -27,7 +27,13 @@ export function defaultStatisticsPreferences(): StatisticsPreferences {
         year: ['cash', 'heatmap', 'wealth', 'flow', 'categories', 'ranking', 'report', 'accounts', 'tagShare', 'tags', 'note'],
         custom: ['cash', 'wealth', 'flow', 'categories', 'ranking', 'report', 'accounts', 'tagShare', 'tags']
     };
-    return { revision: '0', modules: Object.fromEntries(Object.entries(ids).map(([key, value]) => [key, value.map(id => ({ id, visible: true }))])) as StatisticsPreferences['modules'], carrySurplus: false, carryDeficit: false, dailyBudgetMode: 'remaining', budgetProgress: 'remaining' };
+    const defaultVisible: Record<string, Set<string>> = {
+        daily: new Set(['cash', 'assets', 'budget']),
+        month: new Set(['cash', 'categories', 'ranking', 'wealth', 'note']),
+        year: new Set(['cash', 'heatmap', 'categories', 'ranking', 'wealth', 'note']),
+        custom: new Set(['cash', 'categories', 'ranking', 'wealth'])
+    };
+    return { revision: '0', modules: Object.fromEntries(Object.entries(ids).map(([key, value]) => [key, value.map(id => ({ id, visible: defaultVisible[key]?.has(id) ?? true }))])) as StatisticsPreferences['modules'], carrySurplus: false, carryDeficit: false, dailyBudgetMode: 'remaining', budgetProgress: 'remaining' };
 }
 async function request<T>(method: 'get' | 'post', path: string, data?: unknown): Promise<T> {
     const response = await axios.request<ApiResponse<T> & { errorMessage?: string }>({ method, url: `v1/statistics/${path}`, data });

@@ -12,7 +12,7 @@ APK 内包含 Vue / Framework7 界面、ARM64 Go / SQLite 共享库和 Java / JN
 
 资产提醒需 Android 通知授权。系统可能延后通知；不保证应用关闭期间持续结算，重新打开时补齐到期费用、定存收益、可取得数据的货币基金收益及基金定投。货币基金收益等待日期在前台每分钟重试，补记成功后刷新账单和理财页面；基金定投也在前台按分钟分批检查，缺净值或余额不足保持待确认；它不向交易平台实际下单或扣款。公开行情、汇率等功能仍需互联网。
 
-“资产 → 加密交易所 → 每日定投”按公开历史参考价记录已设置的每日计划，不向交易所下单。关闭后重新打开会补记可取得行情的日期；缺数据待处理，余额不足直接暂停，手动恢复后不补买暂停期间。未来三天稳定币不足时在应用内弹窗，不要求额外通知权限。计划、执行记录及投资事实随 SQLite 完整备份保存。
+“资产 → 加密交易所 → 每日定投”按公开历史参考价记录已设置的每日计划，不向交易所下单；`DcaScheduler`/`DcaNotifier` 按近期计划与待处理重试安排系统唤醒和余量不足通知。关闭后重新打开会补记可取得行情的日期；缺数据待处理，余额不足直接暂停，手动恢复后不补买暂停期间。计划、执行记录及投资事实随 SQLite 完整备份保存。
 
 ## 手机完整备份与隐私
 
@@ -45,7 +45,7 @@ python .\scripts\build_android.py
 
 脚本构建前端、Go 共享库、JNI、Java、D8 和签名 APK，检查 APK/ELF 的 16 KB 对齐。不需要另装 Android Studio、Gradle 或模拟器。脚本面向 Windows；SDK 可由 `ANDROID_HOME` 或 `--sdk` 指定，NDK 用 `--ndk` 指定。
 
-产物为 `dist/android/OpenBill-Android-arm64.apk`。当前仅构建 ARM64，声明最低 Android 8.0，实际验收仅覆盖 Android 16 真机。前端和后端源码均未变化且缓存仍存在时，可使用 `--skip-frontend --skip-backend`；清理构建缓存后应执行完整构建。
+产物为 `dist/android/OpenBill-Android-arm64.apk`。当前仅构建 ARM64，声明最低 Android 8.0。界面依赖系统 WebView，前端以 Chrome 119 为构建目标；系统 WebView 太旧时可能无法打开或正常操作，请先更新 Android System WebView。前端和后端源码均未变化且缓存仍存在时，可使用 `--skip-frontend --skip-backend`；清理构建缓存后应执行完整构建。
 
 APK 只打包网页资源、原生库、默认配置和许可证，排除运行账本、个人配置、签名材料及 `dist/android` 中的安装包。
 

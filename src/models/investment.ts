@@ -1,3 +1,5 @@
+import type { TransactionPictureInfoBasicResponse } from './transaction_picture_info.ts';
+
 export interface InvestmentAccount { id: string; name: string; kind: string; platform?: string; instruments?: string[]; currency?: 'CNY' | 'USD'; paymentInstruments?: string[] }
 export interface AccountDeletionTarget { id: string; kind: 'cash' | 'portfolio' }
 export interface AccountDeletionPreview { name: string; transactionCount: number; investmentCount: number; templateCount: number; dueCount?:number; depositCount?:number; installmentCount?:number; cryptoDcaPlanCount?:number; subAccountCount: number; parentAccountName: string; affectedAccounts: string[]; blockedReason: string; token: string }
@@ -7,7 +9,7 @@ export interface InstrumentBinding { market: string; provider: string; providerI
 export interface InstrumentCandidate extends InstrumentBinding { name: string; symbol: string; type: 'CRYPTO' | 'STOCK' | 'FUND' | 'OTHER' }
 export interface Instrument extends Partial<InstrumentBinding> { id: string; type: 'CRYPTO' | 'STOCK' | 'FUND' | 'OTHER'; symbol: string; name: string; precision: number }
 export type InvestmentEventType = 'OPENING' | 'BUY' | 'SELL' | 'TRANSFER' | 'INCOME' | 'EXPENSE' | 'ADJUST';
-export interface WalletEntry { currency: 'CNY' | 'USD'; categoryId: string; fxDate: string; fxSource: string }
+export interface WalletEntry { currency: 'CNY' | 'USD'; categoryId: string; fxDate: string; fxSource: string; excludeFromStatistics?: boolean; excludeFromBudget?: boolean; hideAmount?: boolean; locationName?: string; tagIds?: string[]; discountAmount?: string; pictureIds?: string[]; pictures?: TransactionPictureInfoBasicResponse[] }
 export interface AssetMovement { instrumentId: string; quantity: string }
 export interface InvestmentEvent {
     id: string; type: InvestmentEventType; accountId: string; instrumentId: string; toAccountId: string; bookId?: string;

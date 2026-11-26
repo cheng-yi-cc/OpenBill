@@ -5,6 +5,9 @@ export interface LedgerBook {
     displayOrder: number;
     isDefault: boolean;
     archived: boolean;
+    hidden: boolean;
     showTransfers: boolean;
     showInvestments: boolean;
+    hiddenCategoryIds?: string[];
+    categoryScopeRevision?: number;
 }

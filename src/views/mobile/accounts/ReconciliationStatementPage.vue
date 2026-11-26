@@ -1,25 +1,22 @@
 <template>
-    <f7-page @page:afterin="onPageAfterIn">
+    <f7-page class="cy-mobile-surface cy-asset-surface" @page:afterin="onPageAfterIn">
         <f7-navbar>
-            <f7-nav-left :class="{ 'disabled': loading || updatingLastReconciledTime }" :back-link="tt('Back')"></f7-nav-left>
+            <f7-nav-left :class="{ 'disabled': loading || updatingLastReconciledTime }" back-link="返回"></f7-nav-left>
             <f7-nav-title>
-                <span style="color: var(--f7-text-color)" v-if="!finishQuery">{{ tt('Reconciliation Statement') }}</span>
-                <f7-link popover-open=".display-mode-popover-menu" :class="{ 'disabled': loading || updatingLastReconciledTime }" v-if="finishQuery">
-                    <span style="color: var(--f7-text-color)">{{ tt('Reconciliation Statement') }}</span>
-                    <f7-icon class="page-title-bar-icon" style="opacity: 0.5"
-                             color="gray" f7="chevron_down_circle_fill"></f7-icon>
+                <f7-link popover-open=".display-mode-popover-menu" class="reconcile-nav-trigger" :class="{ 'disabled': loading || updatingLastReconciledTime }">
+                    <span class="reconcile-nav-text">{{ currentAccount?.name ? `${currentAccount.name} · 对账` : '流水对账' }}</span>
+                    <f7-icon class="reconcile-nav-caret" f7="chevron_down_circle_fill"></f7-icon>
                 </f7-link>
             </f7-nav-title>
             <f7-nav-right :class="{ 'navbar-compact-icons': true, 'disabled': loading || updatingLastReconciledTime }">
-                <f7-link icon-f7="checkmark_alt" :class="{ 'disabled': !validQuery }" :aria-label="tt('Continue')" @click="reload(false)" v-if="!finishQuery"></f7-link>
-                <f7-link icon-f7="ellipsis" :class="{ 'disabled': loading || updatingLastReconciledTime }" :aria-label="tt('More')" v-if="finishQuery" @click="showMoreActionSheet = true"></f7-link>
+                <f7-link icon-f7="ellipsis" :class="{ 'disabled': loading || updatingLastReconciledTime }" aria-label="更多操作" @click="showMoreActionSheet = true"></f7-link>
             </f7-nav-right>
         </f7-navbar>
 
         <f7-popover class="display-mode-popover-menu">
             <f7-list dividers>
                 <f7-list-item link="#" no-chevron popover-close
-                              :title="tt('Transaction List')"
+                              title="对账流水"
                               :class="{ 'list-item-selected': !showAccountBalanceTrendsCharts }"
                               @click="showAccountBalanceTrendsCharts = false">
                     <template #after>
@@ -27,7 +24,7 @@
                     </template>
                 </f7-list-item>
                 <f7-list-item link="#" no-chevron popover-close
-                              :title="tt('Account Balance Trends')"
+                              title="余额走势"
                               :class="{ 'list-item-selected': showAccountBalanceTrendsCharts, 'disabled': !reconciliationStatements?.transactions?.length }"
                               @click="showAccountBalanceTrendsCharts = true">
                     <template #after>
@@ -37,133 +34,38 @@
             </f7-list>
         </f7-popover>
 
-        <f7-list form strong inset dividers class="margin-vertical-half" v-if="!finishQuery">
-            <f7-list-item group-title>
-                <small>{{ tt('Date Range') }}</small>
-            </f7-list-item>
-            <f7-list-item :key="dateRange.type"
-                          :title="dateRange.displayName"
-                          :disabled="!validQuery"
-                          v-for="dateRange in allAvailableDateRanges"
-                          @click="changeDateFilter(dateRange.type)">
-                <template #after>
-                    <f7-icon class="list-item-checked-icon" f7="checkmark_alt" v-if="queryDateRangeType === dateRange.type"></f7-icon>
-                </template>
-                <template #footer>
-                    <div v-if="dateRange.isUserCustomRange && queryDateRangeType === dateRange.type && startTime && endTime">
-                        <span>{{ displayStartDateTime }}</span>
-                        <span>&nbsp;-&nbsp;</span>
-                        <br/>
-                        <span>{{ displayEndDateTime }}</span>
-                    </div>
-                </template>
-            </f7-list-item>
+        <div class="reconcile-range-bar">
+            <button v-for="preset in quickDateRanges" :key="preset.type" type="button" :aria-pressed="queryDateRangeType === preset.type" :disabled="loading" @click="selectDateRangeAndReload(preset.type)">{{ preset.label }}</button>
+            <button type="button" :aria-pressed="isCustomRangeActive" :disabled="loading" @click="showCustomDateRangeSheet = true">自定义</button>
+        </div>
+
+        <f7-list strong inset dividers class="margin-vertical-half" v-if="startTime || endTime">
+            <f7-list-item link="#" title="对账时段" :after="compactRangeLabel" @click="showCustomDateRangeSheet = true"></f7-list-item>
         </f7-list>
 
-        <f7-list strong inset dividers class="margin-vertical-half" v-if="finishQuery && !startTime && !endTime">
-            <f7-list-item :title="tt('Date Range')" :after="tt('All')"></f7-list-item>
-        </f7-list>
+        <p v-if="loading" class="cy-empty" role="status">正在核算对账流水…</p>
 
-        <f7-list strong inset dividers class="margin-vertical-half" v-if="finishQuery && (startTime || endTime)">
-            <f7-list-item :title="tt('Start Time')" :after="displayStartDateTime"></f7-list-item>
-            <f7-list-item :title="tt('End Time')" :after="displayEndDateTime"></f7-list-item>
-        </f7-list>
-
-        <f7-list strong inset dividers class="margin-vertical skeleton-text" v-if="finishQuery && loading">
-            <f7-list-item :title="tt('Total Transactions')" after="Count"></f7-list-item>
-            <f7-list-item :title="tt('Total Inflows')" after="Count"></f7-list-item>
-            <f7-list-item :title="tt('Total Outflows')" after="Count"></f7-list-item>
-            <f7-list-item :title="tt('Net Cash Flow')" after="Count"></f7-list-item>
-        </f7-list>
-
-        <f7-list strong inset dividers class="margin-vertical" v-if="finishQuery && !loading">
-            <f7-list-item :title="tt('Total Transactions')"
-                          :after="formatNumberToLocalizedNumerals(reconciliationStatements.transactions.length)"
-                          v-if="reconciliationStatements && reconciliationStatements.transactions"></f7-list-item>
-            <f7-list-item :title="tt('Total Inflows')" :after="displayTotalInflows"></f7-list-item>
-            <f7-list-item :title="tt('Total Outflows')" :after="displayTotalOutflows"></f7-list-item>
-            <f7-list-item :title="tt('Net Cash Flow')" :after="displayTotalBalance"></f7-list-item>
-        </f7-list>
-
-        <f7-list strong inset dividers class="margin-vertical skeleton-text" v-if="finishQuery && loading">
-            <f7-list-item :title="tt('Opening Balance')" after="Count"></f7-list-item>
-            <f7-list-item :title="tt('Closing Balance')" after="Count"></f7-list-item>
-        </f7-list>
-
-        <f7-list strong inset dividers class="margin-vertical" v-if="finishQuery && !loading">
-            <f7-list-item :title="tt('Opening Balance')" :after="displayOpeningBalance"></f7-list-item>
-            <f7-list-item :title="tt('Closing Balance')" :after="displayClosingBalance"></f7-list-item>
-        </f7-list>
-
-        <f7-list strong inset dividers media-list
-                 class="skeleton-text margin-vertical transaction-info-list reconciliation-statement-list"
-                 v-if="finishQuery && !showAccountBalanceTrendsCharts && loading">
-            <ul>
-                <f7-list-item chevron-center
-                    :key="index"
-                    :class="{ 'transaction-info': type === 't', 'last-transaction-of-day': index === 2, 'reconciliation-statement-transaction-date': type === 'd' }"
-                    :link="type === 't' ? '#' : null"
-                    v-for="(type, index) in [ 'd', 't', 't', 'd', 't', 't', 't' ]"
-                >
-                    <div class="display-flex no-padding-horizontal" v-if="type === 'd'">
-                        <div class="actual-item-inner">
-                            <div class="item-title-row">
-                                <div class="item-title">
-                                    <small>yyyy-MM-dd</small>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="display-flex no-padding-horizontal" v-if="type === 't'">
-                        <div class="item-media">
-                            <div class="transaction-icon display-flex align-items-center">
-                                <f7-icon f7="app_fill"></f7-icon>
-                            </div>
-                        </div>
-                        <div class="actual-item-inner">
-                            <div class="item-title-row">
-                                <div class="item-title">
-                                    <div class="transaction-category-name no-padding">
-                                        <span>Category</span>
-                                    </div>
-                                </div>
-                                <div class="item-after">
-                                    <div class="transaction-amount">
-                                        <span>0.00 USD</span>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="item-text">
-                                <div class="transaction-description">
-                                    <span>Transaction Description</span>
-                                </div>
-                            </div>
-                            <div class="item-footer">
-                                <div class="transaction-footer display-flex justify-content-space-between">
-                                    <div class="flex-shrink-0">
-                                        <span>HH:mm</span>
-                                    </div>
-                                    <div class="account-balance flex-shrink-1">
-                                        <span>Balance</span>
-                                        <span style="margin-inline-start: 4px">0.00 USD</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </f7-list-item>
-            </ul>
+        <f7-list strong inset dividers class="margin-vertical" v-if="!loading && reconciliationStatements">
+            <f7-list-item title="账单笔数"
+                          :after="`${formatNumberToLocalizedNumerals(reconciliationStatements.transactions.length)} 笔`"
+                          v-if="reconciliationStatements.transactions"></f7-list-item>
+            <f7-list-item title="本期流入" :after="masked(displayTotalInflows)"></f7-list-item>
+            <f7-list-item title="本期流出" :after="masked(displayTotalOutflows)"></f7-list-item>
+            <f7-list-item title="净流入" :after="masked(displayTotalBalance)"></f7-list-item>
+            <f7-list-item :title="isCurrentLiabilityAccount ? '期初欠款' : '期初余额'" :after="masked(displayOpeningBalance)"></f7-list-item>
+            <f7-list-item :title="isCurrentLiabilityAccount ? '期末欠款' : '期末余额'" :after="masked(displayClosingBalance)"></f7-list-item>
+            <f7-list-item v-if="currentAccount && !currentAccount.subAccounts?.length" link="#" title="校准账户余额" after="去校准" @click="showBalanceAdjustSheet = true"></f7-list-item>
         </f7-list>
 
         <f7-list strong inset dividers class="margin-vertical"
-                 v-if="finishQuery && !showAccountBalanceTrendsCharts && !loading && (!allReconciliationStatementVirtualListItems || !allReconciliationStatementVirtualListItems.length)">
-            <f7-list-item :title="tt('No transaction data')"></f7-list-item>
+                 v-if="!showAccountBalanceTrendsCharts && !loading && (!allReconciliationStatementVirtualListItems || !allReconciliationStatementVirtualListItems.length)">
+            <f7-list-item title="所选时段内暂无流水"></f7-list-item>
         </f7-list>
 
         <f7-list strong inset dividers media-list virtual-list
                  class="margin-vertical transaction-info-list reconciliation-statement-list"
                  :virtual-list-params="{ items: allReconciliationStatementVirtualListItems, renderExternal, height: 'auto' }"
-                 v-if="finishQuery && !showAccountBalanceTrendsCharts && !loading && allReconciliationStatementVirtualListItems && allReconciliationStatementVirtualListItems.length">
+                 v-if="!showAccountBalanceTrendsCharts && !loading && allReconciliationStatementVirtualListItems && allReconciliationStatementVirtualListItems.length">
             <ul>
                 <f7-list-item chevron-center
                               :key="item.index"
@@ -171,9 +73,9 @@
                               :class="{ 'transaction-info': item.type == 'transaction', 'last-transaction-of-day': allReconciliationStatementVirtualListItems[item.index + 1] && allReconciliationStatementVirtualListItems[item.index + 1]!.type === 'date', 'reconciliation-statement-transaction-date': item.type == 'date' }"
                               :style="`top: ${virtualDataItems.topPosition}px`"
                               :virtual-list-index="item.index"
-                              :swipeout="item.type === 'transaction' && !!item.transaction"
+                              :swipeout="item.type === 'transaction' && !!item.transaction && item.transaction.refund?.kind !== 'cash'"
                               :accordion-item="item.type === 'transaction' && !!item.transaction"
-                              :link="item.type == 'transaction' && item.transaction && item.transaction.type !== TransactionType.ModifyBalance ? `/transaction/detail?id=${item.transaction?.id}&type=${item.transaction.type}` : null"
+                              :link="item.type == 'transaction' && item.transaction && item.transaction.type !== TransactionType.ModifyBalance ? `/transaction/detail?id=${item.transaction.refund?.kind === 'cash' ? item.transaction.refund.expenseId : item.transaction.id}&type=${item.transaction.refund?.kind === 'cash' ? TransactionType.Expense : item.transaction.type}` : null"
                               v-for="item in virtualDataItems.items"
                 >
                     <template #inner>
@@ -202,8 +104,9 @@
                                 <div class="item-title-row">
                                     <div class="item-title">
                                         <div class="transaction-category-name no-padding">
-                                        <span v-if="item.transaction.type === TransactionType.ModifyBalance">
-                                            {{ tt('Modify Balance') }}
+                                        <span v-if="item.transaction.refund?.kind === 'cash'">退款</span>
+                                        <span v-else-if="item.transaction.type === TransactionType.ModifyBalance">
+                                            余额校准
                                         </span>
                                             <span v-else-if="item.transaction.type !== TransactionType.ModifyBalance && item.transaction.category">
                                             {{ item.transaction.category.name }}
@@ -212,9 +115,9 @@
                                     </div>
                                     <div class="item-after">
                                         <div class="transaction-amount"
-                                             :class="{ 'text-expense': item.transaction.type === TransactionType.Expense, 'text-income': item.transaction.type === TransactionType.Income }">
-                                            <span v-if="item.transaction.type === TransactionType.Transfer && item.transaction.destinationAccountId === accountId">{{ getDisplayDestinationAmount(item.transaction) }}</span>
-                                            <span v-else-if="item.transaction.type !== TransactionType.Transfer || item.transaction.destinationAccountId !== accountId">{{ getDisplaySourceAmount(item.transaction) }}</span>
+                                             :class="{ 'text-expense': item.transaction.type === TransactionType.Expense && item.transaction.refund?.kind !== 'cash', 'text-income': item.transaction.type === TransactionType.Income || item.transaction.refund?.kind === 'cash' }">
+                                            <span v-if="item.transaction.type === TransactionType.Transfer && item.transaction.destinationAccountId === accountId">{{ masked(getDisplayDestinationAmount(item.transaction)) }}</span>
+                                            <span v-else-if="item.transaction.type !== TransactionType.Transfer || item.transaction.destinationAccountId !== accountId">{{ masked(getDisplaySourceAmount(item.transaction)) }}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -230,8 +133,8 @@
                                             <span style="margin-inline-start: 4px" v-if="!isSameAsDefaultTimezoneOffsetMinutes(item.transaction)">{{ `(${getDisplayTimezone(item.transaction)})` }}</span>
                                         </div>
                                         <div class="account-balance flex-shrink-1">
-                                            <span>{{ isCurrentLiabilityAccount ? tt('Outstanding Balance') : tt('Balance') }}</span>
-                                            <span style="margin-inline-start: 4px">{{ getDisplayAccountBalance(item.transaction) }}</span>
+                                            <span>{{ isCurrentLiabilityAccount ? '当前欠款' : '余额' }}</span>
+                                            <span style="margin-inline-start: 4px">{{ masked(getDisplayAccountBalance(item.transaction)) }}</span>
                                         </div>
                                     </div>
                                 </div>
@@ -240,16 +143,16 @@
                     </template>
                     <f7-swipeout-actions :left="textDirection === TextDirection.RTL"
                                          :right="textDirection === TextDirection.LTR"
-                                         v-if="item.type == 'transaction' && item.transaction">
+                                         v-if="item.type == 'transaction' && item.transaction && item.transaction.refund?.kind !== 'cash'">
                         <f7-swipeout-button color="primary" close
-                                            :text="tt('Duplicate')"
+                                            text="再记"
                                             v-if="item.transaction.type !== TransactionType.ModifyBalance"
                                             @click="duplicateTransaction(item.transaction)"></f7-swipeout-button>
                         <f7-swipeout-button color="orange" close
-                                            :text="tt('Edit')"
+                                            text="编辑"
                                             v-if="item.transaction.editable && item.transaction.type !== TransactionType.ModifyBalance"
                                             @click="editTransaction(item.transaction)"></f7-swipeout-button>
-                        <f7-swipeout-button color="red" class="padding-horizontal" :aria-label="tt('Delete')"
+                        <f7-swipeout-button color="red" class="padding-horizontal" aria-label="删除"
                                             v-if="item.transaction.editable"
                                             @click="removeTransaction(item.transaction, false)">
                             <f7-icon f7="trash"></f7-icon>
@@ -259,12 +162,12 @@
             </ul>
         </f7-list>
 
-        <f7-card v-if="finishQuery && showAccountBalanceTrendsCharts">
+        <f7-card v-if="showAccountBalanceTrendsCharts">
             <f7-card-header class="no-border display-block">
                 <div class="statistics-chart-header display-flex width-100 justify-content-space-between">
                     <div></div>
                     <div class="align-self-flex-end">
-                        <span style="margin-inline-end: 4px;">{{ tt('Time Granularity') }}</span>
+                        <span style="margin-inline-end: 4px;">统计粒度</span>
                         <f7-link :class="{ 'disabled': loading || updatingLastReconciledTime }" href="#" popover-open=".chart-data-date-aggregation-type-popover-menu">{{ chartDataDateAggregationTypeDisplayName }}</f7-link>
                     </div>
                 </div>
@@ -285,7 +188,7 @@
         <f7-popover class="chart-data-date-aggregation-type-popover-menu">
             <f7-list dividers>
                 <f7-list-item group-title>
-                    <small>{{ tt('Time Granularity') }}</small>
+                    <small>统计粒度</small>
                 </f7-list-item>
                 <f7-list-item link="#" no-chevron popover-close
                               :title="dateAggregationType.displayName"
@@ -297,72 +200,53 @@
                         <f7-icon class="list-item-checked-icon" f7="checkmark_alt" v-if="chartDataDateAggregationType === dateAggregationType.type"></f7-icon>
                     </template>
                 </f7-list-item>
-                <f7-list-item group-title>
-                    <small>{{ tt('Timezone Used for Date Range') }}</small>
-                </f7-list-item>
-                <f7-list-item link="#" no-chevron popover-close
-                              :title="timezoneType.displayName"
-                              :class="{ 'list-item-selected': timezoneUsedForDateRange === timezoneType.type }"
-                              :key="timezoneType.type"
-                              v-for="timezoneType in allTimezoneTypesUsedForDateRange"
-                              @click="setTimezoneUsedForDateRange(timezoneType.type)">
-                    <template #after>
-                        <f7-icon class="list-item-checked-icon" f7="checkmark_alt" v-if="timezoneUsedForDateRange === timezoneType.type"></f7-icon>
-                    </template>
-                </f7-list-item>
-
             </f7-list>
         </f7-popover>
 
-        <date-range-selection-sheet :title="tt('Custom Date Range')"
+        <date-range-selection-sheet title="自定义对账时段"
                                     :min-time="startTime"
                                     :max-time="endTime"
                                     v-model:show="showCustomDateRangeSheet"
                                     @dateRange:change="changeCustomDateFilter">
         </date-range-selection-sheet>
 
-        <number-pad-sheet :min-value="TRANSACTION_MIN_AMOUNT"
-                          :max-value="TRANSACTION_MAX_AMOUNT"
-                          :currency="currentAccountCurrency"
-                          :hint="tt('Please enter the new closing balance for this account')"
-                          v-model:show="showNewClosingBalanceSheet"
-                          v-model="newClosingBalance"
-                          @update:model-value="updateClosingBalance"
-        ></number-pad-sheet>
+        <AssetBalanceSheet v-if="currentAccount" v-model:opened="showBalanceAdjustSheet" :account="currentAccount" @saved="onBalanceAdjusted" />
 
         <f7-actions close-by-outside-click close-on-escape :opened="showMoreActionSheet" @actions:closed="showMoreActionSheet = false">
             <f7-actions-group>
-                <f7-actions-button :class="{ 'disabled': loading || updatingLastReconciledTime }" @click="addTransaction()">{{ tt('Add Transaction') }}</f7-actions-button>
-                <f7-actions-button :class="{ 'disabled': loading || updatingLastReconciledTime }" @click="updateClosingBalance(undefined)" v-if="canUpdateAccountCloseBalance">{{ tt('Update Closing Balance') }}</f7-actions-button>
-                <f7-actions-button :class="{ 'disabled': loading || updatingLastReconciledTime }" @click="updateLastReconciledTime()" v-if="newLastReconciledTime">{{ tt('Mark as Reconciled') }}</f7-actions-button>
+                <f7-actions-button :class="{ 'disabled': loading || updatingLastReconciledTime }" @click="addTransaction()">记一笔</f7-actions-button>
+                <f7-actions-button :class="{ 'disabled': loading || updatingLastReconciledTime }" @click="openBalanceAdjust()" v-if="currentAccount && currentAccount.type === AccountType.SingleAccount.type">校准余额</f7-actions-button>
+                <f7-actions-button :class="{ 'disabled': loading || updatingLastReconciledTime }" @click="updateLastReconciledTime()" v-if="newLastReconciledTime">标记已对账</f7-actions-button>
             </f7-actions-group>
             <f7-actions-group>
-                <f7-actions-button :class="{ 'disabled': loading || updatingLastReconciledTime }" @click="reload(true)">{{ tt('Refresh') }}</f7-actions-button>
+                <f7-actions-button :class="{ 'disabled': loading || updatingLastReconciledTime }" @click="reload(true)">刷新对账</f7-actions-button>
             </f7-actions-group>
             <f7-actions-group>
-                <f7-actions-button bold close>{{ tt('Cancel') }}</f7-actions-button>
+                <f7-actions-button bold close>取消</f7-actions-button>
             </f7-actions-group>
         </f7-actions>
 
         <f7-actions close-by-outside-click close-on-escape :opened="showDeleteActionSheet" @actions:closed="showDeleteActionSheet = false">
             <f7-actions-group>
-                <f7-actions-label>{{ tt('Are you sure you want to delete this transaction?') }}</f7-actions-label>
-                <f7-actions-button color="red" @click="removeTransaction(transactionToDelete, true)">{{ tt('Delete') }}</f7-actions-button>
+                <f7-actions-label>确定删除这条账单？账户余额将相应恢复。</f7-actions-label>
+                <f7-actions-button color="red" @click="removeTransaction(transactionToDelete, true)">删除</f7-actions-button>
             </f7-actions-group>
             <f7-actions-group>
-                <f7-actions-button bold close>{{ tt('Cancel') }}</f7-actions-button>
+                <f7-actions-button bold close>取消</f7-actions-button>
             </f7-actions-group>
         </f7-actions>
     </f7-page>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue';
+import { ref, computed } from 'vue';
 import type { Router } from 'framework7/types';
 
 import { useI18n } from '@/locales/helpers.ts';
 import { useI18nUIComponents, showLoading, hideLoading, onSwipeoutDeleted } from '@/lib/ui/mobile.ts';
 import { useReconciliationStatementPageBase } from '@/views/base/accounts/ReconciliationStatementPageBase.ts';
+import { assetAmountsVisible } from '@/lib/asset-visibility.ts';
+import AssetBalanceSheet from '@/components/mobile/AssetBalanceSheet.vue';
 
 import { useSettingsStore } from '@/stores/setting.ts';
 import { useUserStore } from '@/stores/user.ts';
@@ -371,18 +255,14 @@ import { useTransactionCategoriesStore } from '@/stores/transactionCategory.ts';
 import { useTransactionsStore } from '@/stores/transaction.ts';
 
 import { TextDirection } from '@/core/text.ts';
-import type { BigDecimal } from '@/core/numeral.ts';
 import { type TimeRangeAndDateType, DateRange, DateRangeScene } from '@/core/datetime.ts';
 import { AccountType } from '@/core/account.ts';
 import { TransactionType } from '@/core/transaction.ts';
 import { DEFAULT_RECONCILIATION_STATEMENT_DATE_RANGE_IN_MOBILE } from '@/core/statistics.ts';
-import { TRANSACTION_MIN_AMOUNT, TRANSACTION_MAX_AMOUNT } from '@/consts/transaction.ts';
 import { type TransactionReconciliationStatementResponseItemWithInfo } from '@/models/transaction.ts';
 
-import { isDefined, findDisplayNameByType } from '@/lib/common.ts';
-import { BIG_DECIMAL_ZERO, parseBigDecimal } from '@/lib/numeral.ts';
+import { findDisplayNameByType } from '@/lib/common.ts';
 import {
-    getCurrentUnixTime,
     getDateTypeByDateRange,
     getDateTypeByBillingCycleDateRange,
     getDateRangeByDateType,
@@ -413,7 +293,6 @@ const props = defineProps<{
 const {
     tt,
     getCurrentLanguageTextDirection,
-    getAllDateRanges,
     formatNumberToLocalizedNumerals
 } = useI18n();
 
@@ -429,9 +308,7 @@ const {
     firstDayOfWeek,
     fiscalYearStart,
     allDateAggregationTypes,
-    allTimezoneTypesUsedForDateRange,
     isCurrentLiabilityAccount,
-    canUpdateAccountCloseBalance,
     newLastReconciledTime,
     currentAccount,
     currentAccountCurrency,
@@ -462,16 +339,14 @@ const accountsStore = useAccountsStore();
 const transactionCategoriesStore = useTransactionCategoriesStore();
 const transactionsStore = useTransactionsStore();
 
-const finishQuery = ref<boolean>(false);
 const loading = ref<boolean>(false);
 const loadingError = ref<unknown | null>(null);
-const queryDateRangeType = ref<number>(DEFAULT_RECONCILIATION_STATEMENT_DATE_RANGE_IN_MOBILE.type);
+const queryDateRangeType = ref<number>(DateRange.ThisMonth.type);
 const showAccountBalanceTrendsCharts = ref<boolean>(false);
 const updatingLastReconciledTime = ref<boolean>(false);
 const transactionToDelete = ref<TransactionReconciliationStatementResponseItemWithInfo | null>(null);
-const newClosingBalance = ref<number>(0);
 const showCustomDateRangeSheet = ref<boolean>(false);
-const showNewClosingBalanceSheet = ref<boolean>(false);
+const showBalanceAdjustSheet = ref<boolean>(false);
 const showMoreActionSheet = ref<boolean>(false);
 const showDeleteActionSheet = ref<boolean>(false);
 const virtualDataItems = ref<ReconciliationStatementVirtualListData>({
@@ -480,12 +355,23 @@ const virtualDataItems = ref<ReconciliationStatementVirtualListData>({
 });
 
 const textDirection = computed<TextDirection>(() => getCurrentLanguageTextDirection());
-const validQuery = computed(() => currentAccount.value && currentAccount.value.type === AccountType.SingleAccount.type);
-const allAvailableDateRanges = computed(() => getAllDateRanges(DateRangeScene.Normal, {
-    includeCustom: true,
-    includeBillingCycle: !!accountsStore.getAccountStatementDate(accountId.value),
-    includeLastReconciledTimeRange: userStore.currentUserUseLastReconciledTime && !!currentAccountLastReconciledTime.value
-}));
+const quickDateRanges = computed(() => [
+    { type: DateRange.ThisMonth.type, label: '本月' },
+    { type: DateRange.LastMonth.type, label: '上月' },
+    { type: DateRange.LastThirtyDays.type, label: '近30天' },
+    { type: DateRange.ThisYear.type, label: '今年' },
+    { type: DateRange.All.type, label: '全部' }
+]);
+const isCustomRangeActive = computed(() => !quickDateRanges.value.some(item => item.type === queryDateRangeType.value));
+const compactRangeLabel = computed(() => {
+    const clean = (s: string) => s.split(' ')[0]?.replace(/年|月/g, '/').replace(/日/g, '') || '';
+    return `${clean(displayStartDateTime.value)} — ${clean(displayEndDateTime.value)}`;
+});
+
+function masked(value: string): string {
+    if (!assetAmountsVisible.value) return '••••';
+    return value.replace(/^([¥$€£])\s*-/, '-$1').replace(/^([¥$€£])\s+/, '$1');
+}
 
 const allReconciliationStatementVirtualListItems = computed<ReconciliationStatementVirtualListItem[]>(() => {
     const ret: ReconciliationStatementVirtualListItem[] = [];
@@ -529,22 +415,19 @@ function getTransactionDomId(transaction: TransactionReconciliationStatementResp
 
 function init(): void {
     const query = props.f7route.query;
-    const defaultDateRange = getDateRangeByDateType(queryDateRangeType.value, firstDayOfWeek.value, fiscalYearStart.value);
-
     updatePageOpenTime();
-    finishQuery.value = false;
-    loading.value = false;
+    loading.value = true;
     accountId.value = query['accountId'] || '';
-    startTime.value = defaultDateRange?.minTime || 0;
-    endTime.value = defaultDateRange?.maxTime || 0;
     reconciliationStatements.value = undefined;
-
-    initDateFilter();
 
     Promise.all([
         accountsStore.loadAllAccounts({ force: false }),
         transactionCategoriesStore.loadAllCategories({ force: false })
-    ]).catch(error => {
+    ]).then(() => {
+        initDateFilter();
+        reload(false);
+    }).catch(error => {
+        loading.value = false;
         loadingError.value = error;
         showToast(error.message || error);
     });
@@ -552,21 +435,19 @@ function init(): void {
 
 function initDateFilter(): void {
     let defaultDateRangeType = settingsStore.appSettings.reconciliationStatementPageDefaultDateRangeTypeInMobile;
-    const defualtDateRange = DateRange.valueOf(defaultDateRangeType);
+    const defaultDateRange = DateRange.valueOf(defaultDateRangeType);
 
-    if (!defualtDateRange) {
-        defaultDateRangeType = DEFAULT_RECONCILIATION_STATEMENT_DATE_RANGE_IN_MOBILE.type;
-    } else if (defualtDateRange.isBillingCycle && !accountsStore.getAccountStatementDate(accountId.value)) {
-        defaultDateRangeType = DEFAULT_RECONCILIATION_STATEMENT_DATE_RANGE_IN_MOBILE.type;
-    } else if (defualtDateRange.isLastReconciledTimeRange && (!userStore.currentUserUseLastReconciledTime || !currentAccount.value || !currentAccount.value.lastReconciledTime)) {
-        defaultDateRangeType = DEFAULT_RECONCILIATION_STATEMENT_DATE_RANGE_IN_MOBILE.type;
+    if (!defaultDateRange || defaultDateRange.type === DateRange.All.type) {
+        defaultDateRangeType = DateRange.ThisMonth.type;
+    } else if (defaultDateRange.isBillingCycle && !accountsStore.getAccountStatementDate(accountId.value)) {
+        defaultDateRangeType = DateRange.ThisMonth.type;
+    } else if (defaultDateRange.isLastReconciledTimeRange && (!userStore.currentUserUseLastReconciledTime || !currentAccount.value || !currentAccount.value.lastReconciledTime)) {
+        defaultDateRangeType = DateRange.ThisMonth.type;
     } else {
-        defaultDateRangeType = defualtDateRange.type;
+        defaultDateRangeType = defaultDateRange.type;
     }
 
-    nextTick(() => {
-        changeDateFilter(defaultDateRangeType);
-    });
+    changeDateFilter(defaultDateRangeType || DEFAULT_RECONCILIATION_STATEMENT_DATE_RANGE_IN_MOBILE.type);
 }
 
 function changeDateFilter(dateRangeType: number): void {
@@ -594,6 +475,11 @@ function changeDateFilter(dateRangeType: number): void {
     endTime.value = dateRange.maxTime;
 }
 
+function selectDateRangeAndReload(dateRangeType: number): void {
+    changeDateFilter(dateRangeType);
+    reload(false);
+}
+
 function changeCustomDateFilter(minTime: number, maxTime: number): void {
     if (!minTime || !maxTime) {
         return;
@@ -609,10 +495,11 @@ function changeCustomDateFilter(minTime: number, maxTime: number): void {
     startTime.value = minTime;
     endTime.value = maxTime;
     showCustomDateRangeSheet.value = false;
+    reload(false);
 }
 
 function reload(force: boolean): void {
-    finishQuery.value = true;
+    if (!accountId.value) return;
     loading.value = true;
 
     transactionsStore.getReconciliationStatements({
@@ -622,9 +509,9 @@ function reload(force: boolean): void {
     }).then(result => {
         if (force) {
             if (isReconciliationStatementsResponseEquals(result)) {
-                showToast('Data is up to date');
+                showToast('对账数据已是最新');
             } else {
-                showToast('Data has been updated');
+                showToast('对账数据已更新');
             }
         }
 
@@ -651,61 +538,12 @@ function editTransaction(transaction: TransactionReconciliationStatementResponse
     props.f7router.navigate(`/transaction/edit?id=${transaction.id}&type=${transaction.type}`);
 }
 
-function updateClosingBalance(balance?: number): void {
-    let currentClosingBalance: BigDecimal = reconciliationStatements.value?.closingBalance ?? BIG_DECIMAL_ZERO;
+function openBalanceAdjust(): void {
+    showBalanceAdjustSheet.value = true;
+}
 
-    if (isCurrentLiabilityAccount.value) {
-        currentClosingBalance = currentClosingBalance.negate();
-    }
-
-    if (!isDefined(balance)) {
-        if (!currentClosingBalance.between(TRANSACTION_MIN_AMOUNT, TRANSACTION_MAX_AMOUNT)) {
-            showToast('Numeric Overflow');
-            return;
-        }
-
-        newClosingBalance.value = currentClosingBalance.toSafeIntegerNumber();
-        showNewClosingBalanceSheet.value = true;
-        return;
-    }
-
-    const currentUnixTime = getCurrentUnixTime();
-    let setTransactionTime = false;
-    let newTransactionTime: number | undefined = undefined;
-
-    if (endTime.value < currentUnixTime) {
-        setTransactionTime = true;
-        newTransactionTime = endTime.value;
-    } else if (currentUnixTime < startTime.value) {
-        setTransactionTime = true;
-        newTransactionTime = startTime.value;
-    }
-
-    let newTransactionType: TransactionType = isCurrentLiabilityAccount.value ? TransactionType.Expense : TransactionType.Income;
-    let newTransactionAmount: BigDecimal = parseBigDecimal(balance).subtract(currentClosingBalance);
-
-    if (newTransactionAmount.isNegative()) {
-        newTransactionType = isCurrentLiabilityAccount.value ? TransactionType.Income : TransactionType.Expense;
-        newTransactionAmount = newTransactionAmount.negate();
-    }
-
-    if (!newTransactionAmount.between(TRANSACTION_MIN_AMOUNT, TRANSACTION_MAX_AMOUNT)) {
-        showToast('Numeric Overflow');
-        return;
-    }
-
-    const params: string[] = [];
-
-    if (setTransactionTime) {
-        params.push(`time=${newTransactionTime}`);
-    }
-
-    params.push(`type=${newTransactionType}`);
-    params.push(`amount=${newTransactionAmount.toSafeIntegerNumber()}`);
-    params.push(`accountId=${accountId.value}`);
-    params.push(`noTransactionDraft=true`);
-
-    props.f7router.navigate(`/transaction/add?${params.join('&')}`);
+function onBalanceAdjusted(): void {
+    void accountsStore.loadAllAccounts({ force: true }).finally(() => reload(false));
 }
 
 function updateLastReconciledTime(): void {
@@ -719,7 +557,7 @@ function updateLastReconciledTime(): void {
     accountsStore.updateAccountLastReconciledTime(accountId.value, newLastReconciledTime.value).then(() => {
         updatingLastReconciledTime.value = false;
         hideLoading();
-        showToast('Last reconciled time have been updated');
+        showToast('已标记最新对账时间');
     }).catch(error => {
         updatingLastReconciledTime.value = false;
         hideLoading();
@@ -732,7 +570,7 @@ function updateLastReconciledTime(): void {
 
 function removeTransaction(transaction: TransactionReconciliationStatementResponseItemWithInfo | null, confirm: boolean): void {
     if (!transaction) {
-        showAlert('An error occurred');
+        showAlert('发生错误');
         return;
     }
 
@@ -754,6 +592,7 @@ function removeTransaction(transaction: TransactionReconciliationStatementRespon
         }
     }).then(() => {
         hideLoading();
+        showToast('账单已删除');
         reload(false);
     }).catch(error => {
         hideLoading();
@@ -768,16 +607,12 @@ function setChartDataDateAggregationType(type: number): void {
     chartDataDateAggregationType.value = type;
 }
 
-function setTimezoneUsedForDateRange(type: number): void {
-    timezoneUsedForDateRange.value = type;
-}
-
 function renderExternal(vl: unknown, vlData: ReconciliationStatementVirtualListData): void {
     virtualDataItems.value = vlData;
 }
 
 function onPageAfterIn(): void {
-    if (finishQuery.value && transactionsStore.transactionReconciliationStatementStateInvalid) {
+    if (transactionsStore.transactionReconciliationStatementStateInvalid) {
         reload(false);
     }
 
@@ -788,6 +623,49 @@ init();
 </script>
 
 <style>
+.reconcile-nav-trigger {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    min-width: 0;
+    color: var(--cy-ink) !important;
+    padding: 0 !important;
+}
+.reconcile-nav-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.reconcile-nav-caret {
+    flex: none;
+    font-size: 16px !important;
+    opacity: 0.6;
+}
+.reconcile-range-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 10px 16px 4px;
+}
+.reconcile-range-bar button {
+    flex: 0 0 auto;
+    padding: 6px 11px;
+    border-radius: 999px;
+    border: 1px solid var(--cy-line);
+    background: var(--cy-card);
+    color: var(--cy-muted);
+    font-size: 12px;
+}
+.reconcile-range-bar button[aria-pressed=true] {
+    background: var(--cy-accent);
+    border-color: var(--cy-accent);
+    color: #fff;
+    font-weight: 500;
+}
+.dark .reconcile-range-bar button[aria-pressed=true] {
+    color: #102725;
+}
 .list.reconciliation-statement-list li.reconciliation-statement-transaction-date:first-child {
     border-radius: var(--f7-list-inset-border-radius) var(--f7-list-inset-border-radius) 0 0;
 }

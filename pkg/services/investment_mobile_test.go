@@ -282,3 +282,39 @@ func TestAccountDeletionStopsPlansAndPendingOrders(t *testing.T) {
 	require.Equal(t, o.Id, orders[0].Id)
 	require.Equal(t, "cancelled", orders[0].Status)
 }
+
+func TestFundDCAAlertsAndNextScheduleTimes(t *testing.T) {
+	f := newInvestmentDBFixture(t)
+	a := fixtureFund(t, f)
+	now := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
+	// f.bankID starts with 20000.00 (2000000 minor units).
+	// Two daily plans of 8000 each over next 3 days = 48000 > 20000 => early warning.
+	_, err := f.s.SaveInvestmentPlan(nil, f.uid, models.InvestmentPlan{
+		AccountId: f.portfolioID, InstrumentId: a.Id, CashAccountId: fmt.Sprint(f.bankID),
+		Amount: "8000", FeePercent: "0", Cycle: "daily", StartDate: "2026-11-15", Time: "11:00", TimeZone: "UTC",
+	})
+	require.NoError(t, err)
+	alerts, err := f.s.FundDCAAlerts(nil, f.uid, now)
+	require.NoError(t, err)
+	require.Len(t, alerts, 1)
+	require.Equal(t, fmt.Sprint(f.bankID), alerts[0].CashAccountId)
+	require.Equal(t, "20000.00", alerts[0].Balance)
+	require.Equal(t, "24000.00", alerts[0].Required)
+	require.False(t, alerts[0].InsufficientNow)
+
+	// Make a plan-generated pending order due now exceeding balance -> InsufficientNow becomes true.
+	_, err = f.s.SaveInvestmentPlan(nil, f.uid, models.InvestmentPlan{
+		AccountId: f.portfolioID, InstrumentId: a.Id, CashAccountId: fmt.Sprint(f.bankID),
+		Amount: "25000", FeePercent: "0", Cycle: "monthly", StartDate: "2026-11-15", Time: "09:00", TimeZone: "UTC",
+	})
+	require.NoError(t, err)
+	res, err := f.s.syncInvestmentPlansAt(nil, f.uid, true, now)
+	require.NoError(t, err)
+	require.Len(t, res.Alerts, 1)
+	require.True(t, res.Alerts[0].InsufficientNow)
+	require.NotEmpty(t, res.Alerts[0].PlanNames)
+
+	times, err := f.s.NextDCAScheduleTimes(nil, f.uid, now)
+	require.NoError(t, err)
+	require.NotEmpty(t, times)
+}

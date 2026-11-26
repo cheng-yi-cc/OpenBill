@@ -11,7 +11,7 @@
                 <button type="button" class="category-field-button" :disabled="submitting" @click="showColorSelectionSheet = true"><span>图标颜色</span><ItemIcon icon-type="fixed-f7" icon-id="circle_fill" :color="category.color" /><f7-icon f7="chevron_right" /></button>
                 <button v-if="category.parentId && category.parentId !== '0'" type="button" class="category-field-button" :disabled="submitting || !editCategoryId" @click="showPrimaryCategorySheet = true"><span>一级分类</span><small>{{ getPrimaryCategoryName(category.parentId) }}</small><f7-icon v-if="editCategoryId" f7="chevron_right" /></button>
                 <div v-if="editCategoryId" class="category-field-button"><span>显示分类</span><f7-toggle :disabled="submitting" :checked="category.visible" @toggle:change="category.visible = $event" /></div>
-                <button type="button" class="category-field-button" :disabled="submitting" @click="showBookSelection = true"><span>生效账本</span><small>{{ !category.bookIds.length ? '全部账本' : category.bookIds.length === 1 ? booksStore.allBooks.find(book => book.id === category.bookIds[0])?.name || '已选 1 个账本' : `已选 ${category.bookIds.length} 个账本` }}</small><f7-icon f7="chevron_right" /></button>
+                <button v-if="booksStore.allBooks.length > 1" type="button" class="category-field-button" :disabled="submitting" @click="showBookSelection = true"><span>生效账本</span><small>{{ !category.bookIds.length ? '全部账本' : category.bookIds.length === 1 ? booksStore.allBooks.find(book => book.id === category.bookIds[0])?.name || '已选 1 个账本' : `已选 ${category.bookIds.length} 个账本` }}</small><f7-icon f7="chevron_right" /></button>
                 <label class="category-note"><span>备注</span><textarea v-model="category.comment" :disabled="submitting" rows="3" maxlength="255" placeholder="填写备注（选填）" aria-label="分类备注" /></label>
             </form>
         </main>
@@ -156,9 +156,9 @@ function save(): void {
         hideLoading();
 
         if (!editCategoryId.value) {
-            showToast('You have added a new category');
+            showToast('分类已添加');
         } else {
-            showToast('You have saved this category');
+            showToast('分类已保存');
         }
 
         router.back();

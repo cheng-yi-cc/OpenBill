@@ -16,6 +16,9 @@ export interface ChartBucket {
 export function statisticsEligible(item: Pick<LedgerEntry, 'type' | 'investment' | 'excludeFromStatistics'>): boolean {
     return !item.investment && !item.excludeFromStatistics && [2, 3].includes(item.type);
 }
+export function budgetEligible(item: Pick<LedgerEntry, 'type' | 'investment' | 'excludeFromStatistics' | 'excludeFromBudget' | 'reimbursementAccountId' | 'reimbursementReceiptId'>): boolean {
+    return item.type === 3 && !item.investment && !item.reimbursementReceiptId && (!item.reimbursementAccountId || item.reimbursementAccountId === '0') && !(item.excludeFromBudget ?? item.excludeFromStatistics);
+}
 export function withinRange(entries: LedgerEntry[], from: number, to: number): LedgerEntry[] {
     return entries.filter(entry => entry.time >= from && entry.time <= to);
 }
@@ -50,18 +53,18 @@ export function reportBreakdown(groups: ReportGroup[], metric: StatisticsMetric)
     const max = LedgerDecimal.max(1, ...items.map(item => new LedgerDecimal(item[metric]).abs()));
     return { total: total.toString(), canShare, complete: items.every(item => item.complete), items: items.map(item => ({ ...item, amount: item[metric], percent: canShare ? new LedgerDecimal(item[metric]).div(total).mul(100).toFixed(2) : null, width: new LedgerDecimal(item[metric]).abs().div(max).mul(100).toNumber() })) };
 }
-export function reportBuckets(entries: LedgerEntry[], from: moment.Moment, to: moment.Moment, unit: 'day' | 'month' | 'year' = 'day'): ChartBucket[] {
+export function reportBuckets(entries: LedgerEntry[], from: moment.Moment, to: moment.Moment, unit: 'day' | 'month' | 'year' = 'day', budget = false): ChartBucket[] {
     const format = unit === 'year' ? 'YYYY' : unit === 'month' ? 'YYYY-MM' : 'YYYY-MM-DD';
     const byKey = new Map<string, LedgerEntry[]>();
     for (const entry of entries) {
-        if (!statisticsEligible(entry) || entry.time < from.unix() || entry.time > to.unix()) continue;
+        if (!(budget ? budgetEligible(entry) : statisticsEligible(entry)) || entry.time < from.unix() || entry.time > to.unix()) continue;
         const key = moment.unix(entry.time).tz(from.tz() || 'UTC').format(format);
         const group = byKey.get(key) || []; group.push(entry); byKey.set(key, group);
     }
     const result: ChartBucket[] = [], cursor = from.clone().startOf(unit);
     while (cursor.isSameOrBefore(to)) {
         const key = cursor.format(format);
-        result.push({ key, label: cursor.format(unit === 'year' ? 'YYYY年' : unit === 'month' ? 'M月' : 'M-D'), from: Math.max(from.unix(), cursor.unix()), to: Math.min(to.unix(), cursor.clone().endOf(unit).unix()), count: byKey.get(key)?.length || 0, ...ledgerTotals(byKey.get(key) || []) });
+        result.push({ key, label: cursor.format(unit === 'year' ? 'YYYY年' : unit === 'month' ? 'M月' : 'M-D'), from: Math.max(from.unix(), cursor.unix()), to: Math.min(to.unix(), cursor.clone().endOf(unit).unix()), count: byKey.get(key)?.length || 0, ...ledgerTotals(byKey.get(key) || [], !budget) });
         cursor.add(1, unit);
     }
     return result;
@@ -84,8 +87,8 @@ export function budgetReports(budgets: StatisticsBudget[], entries: LedgerEntry[
     const target = moment.utc(month, 'YYYY-MM', true);
     if (!target.isValid()) return [];
     const lanes = new Map<string, StatisticsBudget[]>(), result: BudgetReport[] = [];
-    const expenseEntries = entries.filter(entry => statisticsEligible(entry) && entry.type === 3);
-    const totalsFor = (budget: StatisticsBudget, from: string, to: string) => ledgerTotals(expenseEntries.filter(entry => entry.bookId === budget.bookId && entry.day >= from && entry.day <= to && (budget.categoryId === '0' || entry.categoryId === budget.categoryId || entry.primaryCategoryId === budget.categoryId)));
+    const expenseEntries = entries.filter(budgetEligible);
+    const totalsFor = (budget: StatisticsBudget, from: string, to: string) => ledgerTotals(expenseEntries.filter(entry => entry.bookId === budget.bookId && entry.day >= from && entry.day <= to && (budget.categoryId === '0' || entry.categoryId === budget.categoryId || entry.primaryCategoryId === budget.categoryId)), false);
     for (const budget of budgets) {
         if (budget.kind === 'custom') {
             if (budget.startDate > target.clone().endOf('month').format('YYYY-MM-DD') || budget.endDate < `${month}-01`) continue;
@@ -120,7 +123,7 @@ export function budgetDaily(report: BudgetReport, entries: LedgerEntry[], now: m
     const current = now.isBetween(from, to, undefined, '[]');
     if (!report.complete || report.available === null) return { daily: null, todayRemaining: null, average: null };
     const days = to.clone().startOf('day').diff(from, 'days') + 1;
-    const today = ledgerTotals(entries.filter(entry => statisticsEligible(entry) && entry.type === 3 && entry.bookId === report.budget.bookId && entry.day === now.format('YYYY-MM-DD') && (report.budget.categoryId === '0' || entry.categoryId === report.budget.categoryId || entry.primaryCategoryId === report.budget.categoryId))).expense;
+    const today = ledgerTotals(entries.filter(entry => budgetEligible(entry) && entry.bookId === report.budget.bookId && entry.day === now.format('YYYY-MM-DD') && (report.budget.categoryId === '0' || entry.categoryId === report.budget.categoryId || entry.primaryCategoryId === report.budget.categoryId)), false).expense;
     const daily = mode === 'remaining' && current ? new LedgerDecimal(report.remaining!).plus(today).div(to.clone().startOf('day').diff(now.clone().startOf('day'), 'days') + 1) : new LedgerDecimal(report.available).div(days);
     return { daily: daily.toFixed(2), todayRemaining: current ? daily.minus(today).toFixed(2) : null, average: new LedgerDecimal(report.spent).div(elapsedDays(from, to, now)).toFixed(2) };
 }

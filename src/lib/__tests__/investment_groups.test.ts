@@ -8,8 +8,8 @@ describe('cross-account crypto summary',()=>{
   expect(result).toHaveLength(1);expect(result[0]!.position.quantity).toBe('0.2');expect(result[0]!.position.cost).toBe('20');expect(result[0]!.position.dailyPnl).toBe('0.4');expect(result[0]!.profit).toBe('4');expect(result[0]!.members).toEqual([a,b]);expect(a.position.quantity).toBe('0.1');
  });
  it('preserves unknown amounts and never merges by ticker alone',()=>{
-  const a=row('exchange'),b=row('wallet',undefined,null);b.position.dailyPnl=null;
-  const result=groupInvestmentHoldings([a,b]);expect(result[0]!.position.cost).toBeNull();expect(result[0]!.position.dailyPnl).toBeNull();
+  const a=row('exchange'),b=row('wallet',undefined,null);b.position.dailyPnl=null;b.position.marketValue='';
+  const result=groupInvestmentHoldings([a,b]);expect(result[0]!.position.marketValue).toBeNull();expect(result[0]!.position.cost).toBeNull();expect(result[0]!.position.dailyPnl).toBeNull();
   expect(groupInvestmentHoldings([a,row('other','custom-btc')])).toHaveLength(2);
  });
  it('merges only a verified provider identity with a fixed preset',()=>{

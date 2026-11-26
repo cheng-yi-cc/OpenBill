@@ -201,6 +201,57 @@ func (s *InvestmentService) FixedDeposits(c core.Context, uid int64) ([]models.F
 	})
 	return items, err
 }
+
+// Processed monetary-income days are permanent accounting facts. Do not
+// silently change the deposit reservation used to calculate one of them.
+func guardDepositMonetaryHistory(sess *xorm.Session, uid int64, before, after *models.FixedDeposit) error {
+	var accountIDs []int64
+	start, end := "", ""
+	for _, d := range []*models.FixedDeposit{before, after} {
+		if d == nil {
+			continue
+		}
+		id, err := strconv.ParseInt(d.AccountId, 10, 64)
+		if err != nil || id <= 0 {
+			return investmentError("定存账户无效，请检查历史记录")
+		}
+		accountIDs = append(accountIDs, id)
+		if start == "" || d.StartDate < start {
+			start = d.StartDate
+		}
+		if d.MaturityDate > end {
+			end = d.MaturityDate
+		}
+	}
+	if len(accountIDs) == 0 {
+		return nil
+	}
+	var days []models.MonetaryIncomeDay
+	if err := sess.Where("uid=? AND date>=? AND date<?", uid, start, end).In("account_id", accountIDs).Find(&days); err != nil {
+		return err
+	}
+	reservation := func(d *models.FixedDeposit, day models.MonetaryIncomeDay) (decimal.Decimal, error) {
+		if d == nil || d.AccountId != strconv.FormatInt(day.AccountId, 10) || day.Date < d.StartDate || day.Date >= d.MaturityDate || (d.Closed && (d.ClosedDate == "" || d.ClosedDate <= day.Date)) {
+			return decimal.Zero, nil
+		}
+		return decimal.NewFromString(d.Principal)
+	}
+	for _, day := range days {
+		oldAmount, err := reservation(before, day)
+		if err != nil {
+			return err
+		}
+		newAmount, err := reservation(after, day)
+		if err != nil {
+			return err
+		}
+		if !oldAmount.Equal(newAmount) {
+			return investmentError("定存变更会影响已处理的货币基金收益，请保留原有本金和日期")
+		}
+	}
+	return nil
+}
+
 func (s *InvestmentService) SaveFixedDeposit(c core.Context, uid int64, input models.FixedDeposit) (*models.FixedDeposit, error) {
 	if uid <= 0 || len(input.Id) > 64 || len(input.BookId) > 64 || len(input.CategoryId) > 32 {
 		return nil, investmentError("定存设置无效")
@@ -215,6 +266,7 @@ func (s *InvestmentService) SaveFixedDeposit(c core.Context, uid int64, input mo
 		if err != nil {
 			return err
 		}
+		input.AccountId = strconv.FormatInt(a.AccountId, 10)
 		input.Currency = a.Currency
 		book, err := Books.ResolveInSession(sess, uid, input.BookId, false)
 		if err != nil {
@@ -232,6 +284,7 @@ func (s *InvestmentService) SaveFixedDeposit(c core.Context, uid int64, input mo
 		if err = Transactions.isCategoryValid(sess, &models.Transaction{Uid: uid, BookId: book, Type: models.TRANSACTION_DB_TYPE_INCOME, CategoryId: category}); err != nil {
 			return err
 		}
+		var previous *models.FixedDeposit
 		if input.Id != "" {
 			old := new(models.FixedDeposit)
 			has, err := sess.ID(input.Id).Where("uid=? AND closed=?", uid, false).Get(old)
@@ -242,6 +295,7 @@ func (s *InvestmentService) SaveFixedDeposit(c core.Context, uid int64, input mo
 				return investmentError("定存不存在或已入账，不能再改计息规则")
 			}
 			input.TransactionId = old.TransactionId
+			previous = old
 		} else {
 			input.Id = "deposit-" + investmentID()
 		}
@@ -249,6 +303,9 @@ func (s *InvestmentService) SaveFixedDeposit(c core.Context, uid int64, input mo
 		input.Closed = false
 		input.ClosedDate = ""
 		input.TransactionId = ""
+		if err := guardDepositMonetaryHistory(sess, uid, previous, &input); err != nil {
+			return err
+		}
 		// Principal remains part of the account. No expense or balance adjustment.
 		exists, err := sess.ID(input.Id).Exist(&models.FixedDeposit{})
 		if err != nil {
@@ -292,7 +349,13 @@ func (s *InvestmentService) CloseFixedDeposit(c core.Context, uid int64, id stri
 		if err != nil {
 			return err
 		}
-		if _, err = sess.ID(id).Where("uid=?", uid).Cols("closed", "closed_date").Update(&models.FixedDeposit{Closed: true, ClosedDate: time.Now().In(zone).Format("2006-01-02")}); err != nil {
+		closed := *row
+		closed.Closed = true
+		closed.ClosedDate = time.Now().In(zone).Format("2006-01-02")
+		if err = guardDepositMonetaryHistory(sess, uid, row, &closed); err != nil {
+			return err
+		}
+		if _, err = sess.ID(id).Where("uid=?", uid).Cols("closed", "closed_date").Update(&closed); err != nil {
 			return err
 		}
 		_, err = sess.ID(id).Where("uid=?", uid).Delete(&models.CalendarEvent{})

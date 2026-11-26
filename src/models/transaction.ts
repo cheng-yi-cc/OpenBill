@@ -17,12 +17,16 @@ export class Transaction implements TransactionInfoResponse {
     public scheduledCreated?: boolean;
     public monetaryIncome?: TransactionInfoResponse['monetaryIncome'];
     public wallet?: TransactionInfoResponse['wallet'];
+    public refund?: TransactionInfoResponse['refund'];
     public id: string;
     public bookId: string = '';
     public investmentEventId?: string;
     public excludeFromStatistics = false;
+    public excludeFromBudget = false;
     public debtDueDate = '';
     public locationName = '';
+    public locationAddress = '';
+    public linkedTransactionIds: string[] = [];
     public discountAmount = '0';
     public transferFeeAmount = '0';
     public transferFeeCategoryId = '0';
@@ -253,8 +257,10 @@ export class Transaction implements TransactionInfoResponse {
             transferFeeCategoryId: this.type === TransactionType.Transfer ? this.transferFeeCategoryId : '0',
             debtDueDate: this.type===TransactionType.Transfer?this.debtDueDate:'',
             locationName:this.locationName,
+            locationAddress:this.locationAddress, linkedTransactionIds:this.linkedTransactionIds,
             discountAmount: [TransactionType.Expense, TransactionType.Income].includes(this.type) && this.sourceAmount > 0 ? this.discountAmount : '0',
             excludeFromStatistics: this.excludeFromStatistics,
+            excludeFromBudget: this.excludeFromBudget,
             reimbursementAccountId: this.type === TransactionType.Expense ? this.reimbursementAccountId : '0',
             type: this.type,
             categoryId: this.getCategoryId(),
@@ -286,8 +292,10 @@ export class Transaction implements TransactionInfoResponse {
             transferFeeCategoryId: this.type === TransactionType.Transfer ? this.transferFeeCategoryId : '0',
             debtDueDate: this.type===TransactionType.Transfer?this.debtDueDate:'',
             locationName:this.locationName,
+            locationAddress:this.locationAddress, linkedTransactionIds:this.linkedTransactionIds,
             discountAmount: [TransactionType.Expense, TransactionType.Income].includes(this.type) && this.sourceAmount > 0 ? this.discountAmount : '0',
             excludeFromStatistics: this.excludeFromStatistics,
+            excludeFromBudget: this.excludeFromBudget,
             reimbursementAccountId: this.type === TransactionType.Expense ? this.reimbursementAccountId : '0',
             id: this.id,
             type: this.type,
@@ -319,8 +327,10 @@ export class Transaction implements TransactionInfoResponse {
             transferFeeCategoryId: this.type === TransactionType.Transfer ? this.transferFeeCategoryId : '0',
             debtDueDate: this.type===TransactionType.Transfer?this.debtDueDate:'',
             locationName:this.locationName,
+            locationAddress:this.locationAddress, linkedTransactionIds:this.linkedTransactionIds,
             discountAmount: [TransactionType.Expense, TransactionType.Income].includes(this.type) && this.sourceAmount > 0 ? this.discountAmount : '0',
             excludeFromStatistics: this.excludeFromStatistics,
+            excludeFromBudget: this.excludeFromBudget,
             reimbursementAccountId: this.type === TransactionType.Expense ? this.reimbursementAccountId : '0',
             type: this.type,
             categoryId: this.getCategoryId(),
@@ -375,13 +385,15 @@ export class Transaction implements TransactionInfoResponse {
         );
 
         transaction.bookId = transactionResponse.bookId || '';
-        transaction.createdAt=transactionResponse.createdAt; transaction.scheduledCreated=transactionResponse.scheduledCreated; transaction.monetaryIncome=transactionResponse.monetaryIncome; transaction.wallet=transactionResponse.wallet;
+        transaction.createdAt=transactionResponse.createdAt; transaction.scheduledCreated=transactionResponse.scheduledCreated; transaction.monetaryIncome=transactionResponse.monetaryIncome; transaction.wallet=transactionResponse.wallet; transaction.refund=transactionResponse.refund;
         transaction.debtDueDate=transactionResponse.debtDueDate||'';transaction.locationName=transactionResponse.locationName||'';
+        transaction.locationAddress=transactionResponse.locationAddress||'';transaction.linkedTransactionIds=transactionResponse.linkedTransactionIds||[];
         transaction.discountAmount = transactionResponse.discountAmount || '0';
         transaction.transferFeeAmount = transactionResponse.transferFeeAmount || '0';
         transaction.transferFeeCategoryId = transactionResponse.transferFeeCategoryId || '0';
         transaction.transferFeeParentId = transactionResponse.transferFeeParentId || '0';
         transaction.excludeFromStatistics = !!transactionResponse.excludeFromStatistics;
+        transaction.excludeFromBudget = transactionResponse.excludeFromBudget ?? transaction.excludeFromStatistics;
         transaction.reimbursementAccountId = transactionResponse.reimbursementAccountId || '0';
         transaction.reimbursementReceiptId = transactionResponse.reimbursementReceiptId || '';
         transaction.reimbursementClosedAt = transactionResponse.reimbursementClosedAt || 0;
@@ -460,11 +472,13 @@ export class Transaction implements TransactionInfoResponse {
 
         transaction.bookId = transactionDraft.bookId || '';
         transaction.debtDueDate=transactionDraft.debtDueDate||'';transaction.locationName=transactionDraft.locationName||'';
+        transaction.locationAddress=transactionDraft.locationAddress||'';transaction.linkedTransactionIds=transactionDraft.linkedTransactionIds||[];
         transaction.discountAmount = transactionDraft.discountAmount || '0';
         transaction.transferFeeAmount = transactionDraft.transferFeeAmount || '0';
         transaction.transferFeeCategoryId = transactionDraft.transferFeeCategoryId || '0';
         transaction.transferFeeParentId = transactionDraft.transferFeeParentId || '0';
         transaction.excludeFromStatistics = !!transactionDraft.excludeFromStatistics;
+        transaction.excludeFromBudget = transactionDraft.excludeFromBudget ?? transaction.excludeFromStatistics;
         transaction.reimbursementAccountId = transactionDraft.reimbursementAccountId || '0';
         transaction.reimbursementReceiptId = transactionDraft.reimbursementReceiptId || '';
         transaction.reimbursementClosedAt = transactionDraft.reimbursementClosedAt || 0;
@@ -577,11 +591,14 @@ export class TransactionTagFilter {
 export interface TransactionDraft {
     readonly debtDueDate?: string;
     readonly locationName?: string;
+    readonly locationAddress?: string;
+    readonly linkedTransactionIds?: string[];
     readonly discountAmount?: string;
     readonly transferFeeAmount?: string;
     readonly transferFeeCategoryId?: string;
     readonly transferFeeParentId?: string;
     readonly excludeFromStatistics?: boolean;
+    readonly excludeFromBudget?: boolean;
     readonly reimbursementAccountId?: string;
     readonly reimbursementReceiptId?: string;
     readonly reimbursementClosedAt?: number;
@@ -606,11 +623,14 @@ export interface TransactionGeoLocationRequest {
 export interface TransactionCreateRequest {
     readonly debtDueDate?: string;
     readonly locationName?: string;
+    readonly locationAddress?: string;
+    readonly linkedTransactionIds?: string[];
     readonly discountAmount?: string;
     readonly transferFeeAmount?: string;
     readonly transferFeeCategoryId?: string;
     readonly transferFeeParentId?: string;
     readonly excludeFromStatistics?: boolean;
+    readonly excludeFromBudget?: boolean;
     readonly reimbursementAccountId?: string;
     readonly reimbursementReceiptId?: string;
     readonly reimbursementClosedAt?: number;
@@ -634,11 +654,14 @@ export interface TransactionCreateRequest {
 export interface TransactionModifyRequest {
     readonly debtDueDate?: string;
     readonly locationName?: string;
+    readonly locationAddress?: string;
+    readonly linkedTransactionIds?: string[];
     readonly discountAmount?: string;
     readonly transferFeeAmount?: string;
     readonly transferFeeCategoryId?: string;
     readonly transferFeeParentId?: string;
     readonly excludeFromStatistics?: boolean;
+    readonly excludeFromBudget?: boolean;
     readonly reimbursementAccountId?: string;
     readonly reimbursementReceiptId?: string;
     readonly reimbursementClosedAt?: number;
@@ -759,13 +782,18 @@ export interface TransactionInfoResponse {
     readonly scheduledCreated?: boolean;
     readonly monetaryIncome?: { code:string; date:string; principal:string; perTenThousand:string; amount:string };
     readonly wallet?: { accountId: string; accountName: string; currency: string; amount: string; exchangeRate: string; fxDate: string };
+    readonly investmentSettlement?: { type: 'BUY' | 'SELL'; name: string };
+    readonly refund?: RefundProjection;
     readonly debtDueDate?: string;
     readonly locationName?: string;
+    readonly locationAddress?: string;
+    readonly linkedTransactionIds?: string[];
     readonly discountAmount?: string;
     readonly transferFeeAmount?: string;
     readonly transferFeeCategoryId?: string;
     readonly transferFeeParentId?: string;
     readonly excludeFromStatistics?: boolean;
+    readonly excludeFromBudget?: boolean;
     readonly reimbursementAccountId?: string;
     readonly reimbursementReceiptId?: string;
     readonly reimbursementClosedAt?: number;
@@ -791,6 +819,16 @@ export interface TransactionInfoResponse {
     readonly comment: string;
     readonly geoLocation?: TransactionGeoLocationResponse;
     readonly editable: boolean;
+}
+
+export interface RefundExcessInfo {
+    readonly categoryId: string; readonly bookId: string; readonly comment: string; readonly tagIds: string[];
+    readonly excludeFromStatistics: boolean; readonly excludeFromBudget: boolean;
+}
+export interface RefundProjection {
+    readonly kind: 'expense' | 'cash'; readonly expenseId: string; readonly refundId?: string;
+    readonly netExpense?: string; readonly refundedAmount?: string; readonly offsetAmount?: string;
+    readonly excessAmount?: string; readonly excess?: RefundExcessInfo;
 }
 
 export interface TransactionStatisticRequest {
@@ -956,6 +994,8 @@ export interface TransactionStatisticResponseItem {
     readonly relatedAccountId?: string;
     readonly relatedAccountType?: number;
     readonly amount: string;
+    readonly currency?: string;
+    readonly unassigned?: boolean;
 }
 
 export interface TransactionStatisticTrendsResponseItem {

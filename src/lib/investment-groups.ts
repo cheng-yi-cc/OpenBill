@@ -15,7 +15,7 @@ function identity(row: HoldingRow): string {
     return `instrument:${a.id}`;
 }
 function sum(values: (string|null|undefined)[]): string|null {
-    return values.some(v=>v==null)?null:values.reduce((n,v)=>n.plus(v!),new LedgerDecimal(0)).toString();
+    return values.some(v=>v==null||v.trim()==='')?null:values.reduce((n,v)=>n.plus(v!),new LedgerDecimal(0)).toString();
 }
 export function groupInvestmentHoldings(rows: HoldingRow[]): HoldingGroupRow[] {
     const grouped = new Map<string,HoldingRow[]>();

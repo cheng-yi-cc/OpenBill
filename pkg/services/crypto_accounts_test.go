@@ -167,3 +167,130 @@ func TestCryptoConversionSettlementAndExpiredQuote(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, int64(1300700), f.balance())
 }
+
+func TestCryptoAccountOpeningCostsPreserveCurrencyAndUnknown(t *testing.T) {
+	for _, kind := range []string{"EXCHANGE", "WALLET"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newInvestmentDBFixture(t)
+			cost, zero := "12.3456789123456789", "0"
+			platform := "binance"
+			if kind == "WALLET" {
+				platform = "metamask"
+			}
+			input := CryptoAccountInput{Name: "initial costs", Kind: kind, Platform: platform, Currency: "USD", Holdings: []CryptoHoldingInput{
+				{InstrumentID: "crypto:bitcoin", Quantity: "3", Cost: &cost, CostExchangeRate: "7.2"},
+				{InstrumentID: "crypto:ethereum", Quantity: "2", Cost: &zero, CostExchangeRate: "7.2"},
+				{InstrumentID: "crypto:tether", Quantity: "100"},
+			}}
+			before := f.balance()
+			a, err := f.s.CreateCryptoAccount(nil, f.uid, input, "opening-cost-currency")
+			require.NoError(t, err)
+			again, err := f.s.CreateCryptoAccount(nil, f.uid, input, "opening-cost-currency")
+			require.NoError(t, err)
+			require.Equal(t, a.Id, again.Id)
+			events, err := f.s.Events(nil, f.uid)
+			require.NoError(t, err)
+			require.Len(t, events, 3)
+			for _, e := range events {
+				switch e.InstrumentID {
+				case "crypto:bitcoin":
+					requireMoney(t, "88.88888816888888808", e.Cost)
+					require.Contains(t, e.Note, cost+" USD")
+					require.Contains(t, e.Note, "7.2 CNY/USD")
+				case "crypto:ethereum":
+					requireMoney(t, "0", e.Cost)
+				case "crypto:tether":
+					require.Nil(t, e.Cost)
+				}
+			}
+			replay, err := replayInvestments(events)
+			require.NoError(t, err)
+			for _, pos := range replay.Positions {
+				if pos.InstrumentID == "crypto:bitcoin" {
+					requireMoney(t, "88.88888816888888808", pos.Cost)
+				}
+			}
+			// Changing display currency cannot rewrite historical CNY costs.
+			a.Currency = "CNY"
+			_, err = f.s.UpdatePortfolioAccount(nil, f.uid, *a)
+			require.NoError(t, err)
+			unchanged, err := f.s.Events(nil, f.uid)
+			require.NoError(t, err)
+			require.Equal(t, events, unchanged)
+			require.Equal(t, before, f.balance())
+			changed := "99"
+			input.Holdings[0].Cost = &changed
+			_, err = f.s.CreateCryptoAccount(nil, f.uid, input, "opening-cost-currency")
+			require.ErrorIs(t, err, ErrInvestmentConflict)
+		})
+	}
+}
+
+func TestCryptoAccountInvalidCostRollsBackAllHoldings(t *testing.T) {
+	f := newInvestmentDBFixture(t)
+	valid := "10"
+	for _, tc := range []struct{ quantity, cost, rate, currency string }{
+		{"1", "-1", "1", "CNY"}, {"1", "1e9", "1", "CNY"}, {"1", "10", "", "USD"}, {"1", "10", "0", "USD"},
+		{"1", "10", "-1", "USD"}, {"0", "10", "1", "CNY"}, {"", "0", "1", "CNY"}, {"1", "10", "7", "CNY"},
+		{"1", "0.000000000000000001", "0.000000000000000001", "USD"},
+	} {
+		input := CryptoAccountInput{Name: "invalid cost", Kind: "EXCHANGE", Platform: "binance", Currency: tc.currency, Holdings: []CryptoHoldingInput{
+			{InstrumentID: "crypto:tether", Quantity: "100", Cost: &valid, CostExchangeRate: "1"},
+			{InstrumentID: "crypto:bitcoin", Quantity: tc.quantity, Cost: &tc.cost, CostExchangeRate: tc.rate},
+		}}
+		_, err := f.s.CreateCryptoAccount(nil, f.uid, input, "invalid-opening-cost")
+		require.Error(t, err)
+		require.Equal(t, int64(1), f.count(&models.PortfolioAccount{}))
+		require.Zero(t, f.count(&models.InvestmentEventRecord{}))
+		require.Zero(t, f.count(&models.InvestmentIdempotency{}))
+	}
+}
+
+func TestCryptoAccountSetupPlansAreAtomicAndStartAfterOpening(t *testing.T) {
+	f := newInvestmentDBFixture(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	cost := "700"
+	input := CryptoAccountInput{Name: "with plans", Kind: "EXCHANGE", Platform: "binance", Holdings: []CryptoHoldingInput{
+		{InstrumentID: "crypto:tether", Quantity: "100", Cost: &cost}, {InstrumentID: "crypto:bitcoin", Quantity: "0"}, {InstrumentID: "crypto:ethereum", Quantity: "0"},
+	}, DCAPlans: []CryptoDCASetupInput{
+		{InstrumentID: "crypto:bitcoin", PaymentInstrumentID: "crypto:tether", Amount: "10", DailyTime: "00:00", StartDate: today, TimeZone: "UTC"},
+		{InstrumentID: "crypto:ethereum", PaymentInstrumentID: "crypto:tether", Amount: "5", DailyTime: "00:00", StartDate: today, TimeZone: "UTC"},
+	}}
+	before := f.balance()
+	// An invalid second plan must roll back the account, opening and first plan.
+	input.DCAPlans[1].Amount = "-1"
+	_, err := f.s.CreateCryptoAccount(nil, f.uid, input, "initial-plan-atomic")
+	require.Error(t, err)
+	require.Equal(t, int64(1), f.count(&models.PortfolioAccount{}))
+	require.Zero(t, f.count(&models.CryptoDCAPlan{}))
+	require.Zero(t, f.count(&models.InvestmentEventRecord{}))
+	require.Zero(t, f.count(&models.InvestmentIdempotency{}))
+	input.DCAPlans[1].Amount = "5"
+	a, err := f.s.CreateCryptoAccount(nil, f.uid, input, "initial-plan-atomic")
+	require.NoError(t, err)
+	again, err := f.s.CreateCryptoAccount(nil, f.uid, input, "initial-plan-atomic")
+	require.NoError(t, err)
+	require.Equal(t, a.Id, again.Id)
+	var plans []models.CryptoDCAPlan
+	require.NoError(t, f.engine.Where("uid=?", f.uid).Find(&plans))
+	require.Len(t, plans, 2)
+	for _, p := range plans {
+		require.Equal(t, a.Id, p.AccountId)
+		require.True(t, p.Enabled)
+		require.Equal(t, cryptoDCANextDate(today), p.NextDate)
+		require.NotEmpty(t, p.BookId)
+	}
+	require.Equal(t, int64(1), f.count(&models.InvestmentEventRecord{}))
+	require.Zero(t, f.count(&models.CryptoDCADay{}))
+	require.Equal(t, before, f.balance())
+	// Old dates and wallets cannot silently enable initial plans.
+	input.DCAPlans[0].StartDate = "2020-01-01"
+	_, err = f.s.CreateCryptoAccount(nil, f.uid, input, "initial-plan-old-date")
+	require.Error(t, err)
+	input.Kind = "WALLET"
+	input.Platform = "metamask"
+	_, err = f.s.CreateCryptoAccount(nil, f.uid, input, "initial-plan-wallet")
+	require.Error(t, err)
+	require.Equal(t, int64(2), f.count(&models.CryptoDCAPlan{}))
+	require.Equal(t, int64(2), f.count(&models.PortfolioAccount{}))
+}

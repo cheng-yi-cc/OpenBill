@@ -374,21 +374,24 @@ export default {
         return axios.get<ApiResponse<boolean>>('logout.json');
     },
     refreshToken: (): ApiResponsePromise<TokenRefreshResponse> => {
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
             needBlockRequest = true;
 
             axios.post<ApiResponse<TokenRefreshResponse>>('v1/tokens/refresh.json', {}, {
                 ignoreBlocked: true
             } as ApiRequestConfig).then(response => {
                 const data = response.data;
+                const newToken = data?.result?.newToken;
 
-                resolve(response);
                 needBlockRequest = false;
-
-                return data.result.newToken;
-            }).then(newToken => {
-                blockedRequests.forEach(func => func(newToken));
-                blockedRequests.length = 0;
+                const pending = blockedRequests.splice(0);
+                pending.forEach(func => func(newToken));
+                resolve(response);
+            }).catch(error => {
+                needBlockRequest = false;
+                const pending = blockedRequests.splice(0);
+                pending.forEach(func => func(undefined));
+                reject(error);
             });
         });
     },

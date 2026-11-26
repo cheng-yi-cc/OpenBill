@@ -4,16 +4,17 @@
   <main class="cy-page-body">
    <p v-if="error" class="cy-message" role="alert">{{error}}</p>
    <template v-if="report">
-    <section class="credit-summary"><span>{{report.accountName}} · 总待还</span><strong>{{ledgerMoney(report.outstanding,false)}}<small>{{report.currency}}</small></strong><f7-link v-if="new LedgerDecimal(report.outstanding).gt(0)" :href="repay(report.outstanding)">还款</f7-link></section>
-    <section v-if="report.annualDate" class="credit-annual"><div><span>年费 {{ledgerMoney(report.annualFee||'0',false)}} · {{report.annualDate}}</span><strong>{{report.annualWaived?'已达到免年费条件':'免年费进度'}}</strong></div><p>本年度消费 {{ledgerMoney(report.annualSpend,false)}}，共 {{report.annualCount}} 笔</p><f7-link :href="`/account/edit?id=${id}`">查看年费条件 ›</f7-link></section>
+    <section class="credit-summary"><span>{{report.accountName}} · 已入账待还</span><strong>{{assetCurrencyMoney(report.outstanding,report.currency)}}</strong><f7-link v-if="new LedgerDecimal(report.outstanding).gt(0)" :href="repay(report.outstanding)">还款</f7-link></section>
+    <section v-if="report.annualDate" class="credit-annual"><div><span>年费 {{assetCurrencyMoney(report.annualFee||'0',report.currency)}} · {{report.annualDate}}</span><strong>{{report.annualWaived?'已达到免年费条件':'免年费进度'}}</strong></div><p>本年度消费 {{assetCurrencyMoney(report.annualSpend,report.currency)}}，共 {{report.annualCount}} 笔</p><f7-link :href="`/account/edit?id=${id}`">查看年费条件 ›</f7-link></section>
     <div class="credit-tabs"><button v-for="f in filters" :key="f.id" :class="{active:filter===f.id}" @click="filter=f.id">{{f.name}}</button></div>
     <section v-for="row in statements" :key="row.month" class="credit-statement">
-     <header><strong>{{row.month.replace('-','年')}}月账单</strong><span>{{row.unbilled?'未出账':new LedgerDecimal(row.remaining).isZero()?'已还清':'待还款'}}</span></header>
-     <button class="credit-debt" @click="expanded=expanded===row.month?'':row.month"><span>剩余待还</span><strong>{{ledgerMoney(row.remaining,false)}}</strong><f7-icon f7="chevron_down"/></button>
+     <header><strong>{{row.endDate.slice(0,7).replace('-','年')}}月账单</strong><span>{{row.unbilled?'未出账':new LedgerDecimal(row.remaining).gt(0)?'待还款':hasProjectedFee(row)?'预计待还':'已还清'}}</span></header>
+     <button class="credit-debt" @click="expanded=expanded===row.month?'':row.month"><span>剩余待还</span><strong>{{assetCurrencyMoney(row.remaining,report.currency)}}</strong><f7-icon f7="chevron_down"/></button>
      <div class="credit-meta"><span>{{row.startDate}} — {{row.endDate}}</span><span>{{row.dueDate?`${row.dueDate}还款`:'未设置还款日'}}</span></div>
-     <p v-if="new LedgerDecimal(row.futureFees).gt(0)" class="credit-hint">另有尚未入账的分期服务费 {{ledgerMoney(row.futureFees,false)}}</p>
-     <template v-if="expanded===row.month"><div class="credit-meta"><span>本期本金 {{ledgerMoney(row.charges,false)}}</span><span>已入账服务费 {{ledgerMoney(row.fees,false)}}</span></div><f7-link :href="`/account/activity?id=${id}&from=${row.startDate}&to=${row.endDate}`">查看本期流水 ›</f7-link></template>
-     <footer v-if="new LedgerDecimal(row.remaining).gt(0)"><f7-link :href="`/account/installments?id=${id}&month=${row.month}&amount=${row.remaining}`">账单分期</f7-link><f7-link :href="repay(row.remaining)">还款</f7-link></footer>
+     <p v-if="new LedgerDecimal(row.futureFees).gt(0)" class="credit-hint">另有尚未入账的分期服务费 {{assetCurrencyMoney(row.futureFees,report.currency)}}</p>
+     <p v-if="hasProjectedFee(row)" class="credit-hint">预计待还 {{assetCurrencyMoney(row.projectedRemaining,report.currency)}}，含未入账费用；预存至信用卡后优先抵扣较早费用。</p>
+     <template v-if="expanded===row.month"><div class="credit-meta"><span>本期本金 {{assetCurrencyMoney(row.charges,report.currency)}}</span><span>已入账服务费 {{assetCurrencyMoney(row.fees,report.currency)}}</span></div><f7-link :href="`/account/activity?id=${id}&from=${row.startDate}&to=${row.endDate}`">查看本期流水 ›</f7-link></template>
+     <footer v-if="new LedgerDecimal(row.remaining).gt(0) || hasProjectedFee(row)"><f7-link v-if="new LedgerDecimal(row.remaining).gt(0)" :href="`/account/installments?id=${id}&month=${row.month}&amount=${row.remaining}`">账单分期</f7-link><f7-link v-if="new LedgerDecimal(row.remaining).gt(0)" :href="repay(row.remaining)">还款</f7-link><f7-link v-if="hasProjectedFee(row)" :href="repay(row.projectedRemaining!)">预存预计金额</f7-link></footer>
     </section>
     <p v-if="!statements.length" class="cy-empty">暂无对应账单</p>
    </template><p v-else-if="loading" class="cy-empty">正在读取账单…</p>
@@ -21,10 +22,10 @@
  </f7-page>
 </template>
 <script setup lang="ts">
-import {assetMoney as ledgerMoney} from '@/lib/asset-visibility.ts';
+import {assetCurrencyMoney} from '@/lib/asset-visibility.ts';
 import {computed,ref} from 'vue';
 import type {Router} from 'framework7/types';
-import {creditAccounts,type CreditReport} from '@/lib/credit-accounts.ts';
+import {creditAccounts,type CreditReport,type CreditStatement} from '@/lib/credit-accounts.ts';
 import {LedgerDecimal,keepUpToDate} from '@/lib/mobile-ledger.ts';
 import {investmentError} from '@/lib/investments.ts';
 import {useAccountsStore} from '@/stores/account.ts';
@@ -32,8 +33,11 @@ import {useLedgerScopeStore} from '@/stores/ledgerScope.ts';
 const props=defineProps<{f7route:Router.Route}>(),accounts=useAccountsStore(),scope=useLedgerScopeStore();
 const id=computed(()=>props.f7route.query['id']||''),report=ref<CreditReport>(),loading=ref(false),error=ref(''),expanded=ref(''),filter=ref('unpaid');
 const filters=[{id:'unpaid',name:'待还'},{id:'unbilled',name:'未出账'},{id:'all',name:'全部'}];
-const statements=computed(()=>report.value?.statements.filter(row=>filter.value==='all'||(filter.value==='unbilled'?row.unbilled:!row.unbilled&&new LedgerDecimal(row.remaining).gt(0)))||[]);
-function repay(amount:string):string{const source=accounts.allPlainAccounts.find(a=>[1,2,4,8].includes(a.category)&&!a.assetProfile.kind&&a.currency===report.value?.currency);return `/transaction/add?type=4&accountId=${source?.id||''}&destinationAccountId=${id.value}&amount=${new LedgerDecimal(amount).mul(100).toFixed(0)}`;}
+const requestedMonth=props.f7route.query['month']||'';
+if (/^\d{4}-\d{2}$/.test(requestedMonth)) { filter.value='all'; expanded.value=requestedMonth; }
+function hasProjectedFee(row:CreditStatement):boolean{return row.projectedRemaining!==undefined&&new LedgerDecimal(row.projectedRemaining).gt(new LedgerDecimal(row.remaining));}
+const statements=computed(()=>report.value?.statements.filter(row=>filter.value==='all'||(filter.value==='unbilled'?row.unbilled:!row.unbilled&&(new LedgerDecimal(row.remaining).gt(0)||hasProjectedFee(row))))||[]);
+function repay(amount:string):string{const source=accounts.allVisiblePlainAccounts.find(a=>[1,2,4,8].includes(a.category)&&!a.assetProfile.kind&&a.currency===report.value?.currency);return `/transaction/add?type=4&accountId=${source?.id||''}&destinationAccountId=${id.value}&amount=${new LedgerDecimal(amount).mul(100).toFixed(0)}&noTransactionDraft=true`;}
 async function load():Promise<void>{loading.value=true;error.value='';try{await creditAccounts.sync();await accounts.loadAllAccounts({force:true}).catch(keepUpToDate);report.value=(await creditAccounts.reports(scope.timeZone,id.value))[0];}catch(e){error.value=investmentError(e);}finally{loading.value=false;}}
 </script>
 <style scoped>

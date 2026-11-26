@@ -399,6 +399,9 @@ func (s *TransactionTagService) DeleteTag(c core.Context, uid int64, tagId int64
 	}
 
 	return s.UserDataDB(uid).DoTransaction(c, func(sess *xorm.Session) error {
+		if err := guardRefundTagDeletion(sess, uid, tagId); err != nil {
+			return err
+		}
 		exists, err := sess.Cols("uid", "tag_id").Where("uid=? AND deleted=? AND tag_id=?", uid, false, tagId).Limit(1).Exist(&models.TransactionTagIndex{})
 
 		if err != nil {
@@ -462,6 +465,9 @@ func (s *TransactionTagService) DeleteAllTags(c core.Context, uid int64) error {
 	}
 
 	return s.UserDataDB(uid).DoTransaction(c, func(sess *xorm.Session) error {
+		if err := guardRefundTagDeletion(sess, uid, 0); err != nil {
+			return err
+		}
 		exists, err := sess.Cols("uid", "deleted").Where("uid=? AND deleted=?", uid, false).Limit(1).Exist(&models.TransactionTagIndex{})
 
 		if err != nil {

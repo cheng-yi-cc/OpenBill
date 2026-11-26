@@ -72,3 +72,66 @@ func TestTransferFeeInvalidCreateAndCascadeRestoreOtherAccount(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(2000000), f.balance(), "deleting transfer destination must also reverse source fee")
 }
+
+func TestAccountClearIsAtomicAcrossPagesAndTransferFee(t *testing.T) {
+	f, transfer := feeFixture(t)
+	require.NoError(t, Transactions.CreateTransaction(nil, transfer, nil, nil))
+	before := f.balance()
+	var opening models.Transaction
+	has, err := f.engine.Where("uid=? AND account_id=? AND type=? AND deleted=?", f.uid, f.bankID, models.TRANSACTION_DB_TYPE_MODIFY_BALANCE, false).Get(&opening)
+	require.NoError(t, err)
+	require.True(t, has)
+	_, err = f.engine.Insert(&models.MonetaryIncomeBinding{Id: "clear-account-binding", Uid: f.uid, AccountId: f.bankID, Enabled: true})
+	require.NoError(t, err)
+	_, err = f.engine.Exec(fmt.Sprintf(`CREATE TRIGGER reject_opening_clear BEFORE UPDATE ON "transaction" WHEN OLD.transaction_id=%d AND NEW.deleted=1 BEGIN SELECT RAISE(ABORT, 'test later failure'); END`, opening.TransactionId))
+	require.NoError(t, err)
+	require.Error(t, Transactions.DeleteAllTransactionsOfAccount(nil, f.uid, f.bankID, 1))
+	require.Equal(t, before, f.balance())
+	var binding models.MonetaryIncomeBinding
+	has, err = f.engine.ID("clear-account-binding").Get(&binding)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.True(t, binding.Enabled)
+	var still models.Transaction
+	has, err = f.engine.ID(transfer.TransactionId).Get(&still)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.False(t, still.Deleted)
+	_, err = f.engine.Exec(`DROP TRIGGER reject_opening_clear`)
+	require.NoError(t, err)
+	require.NoError(t, Transactions.DeleteAllTransactionsOfAccount(nil, f.uid, f.bankID, 1))
+	active, err := f.engine.Where("uid=? AND deleted=? AND (account_id=? OR related_account_id=?)", f.uid, false, f.bankID, f.bankID).Count(&models.Transaction{})
+	require.NoError(t, err)
+	require.Zero(t, active)
+	require.Zero(t, f.balance())
+	var other models.Account
+	has, err = f.engine.ID(1003).Get(&other)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.Zero(t, other.Balance, "the other side of a transfer must be reversed")
+	feeCount, err := f.engine.Where("uid=? AND deleted=? AND transfer_fee_parent_id=?", f.uid, false, transfer.TransactionId).Count(&models.Transaction{})
+	require.NoError(t, err)
+	require.Zero(t, feeCount)
+	binding = models.MonetaryIncomeBinding{}
+	has, err = f.engine.ID("clear-account-binding").Get(&binding)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.False(t, binding.Enabled)
+}
+
+func TestAccountClearProtectsSystemSettlementCounterpart(t *testing.T) {
+	f := newInvestmentDBFixture(t)
+	_, err := f.engine.Insert(&models.Account{AccountId: 9911, Uid: f.uid, Name: "system", Type: models.ACCOUNT_TYPE_SINGLE_ACCOUNT, Category: models.ACCOUNT_CATEGORY_VIRTUAL, Currency: "CNY", SystemRole: InvestmentSettlementRole, Balance: 500})
+	require.NoError(t, err)
+	_, err = f.engine.Insert(&models.Transaction{TransactionId: 9912, Uid: f.uid, AccountId: f.bankID, RelatedAccountId: 9911, RelatedId: 9913, Type: models.TRANSACTION_DB_TYPE_TRANSFER_OUT, Amount: 500, RelatedAccountAmount: 500, TransactionTime: utils.GetMinTransactionTimeFromUnixTime(f.at + 1)}, &models.Transaction{TransactionId: 9913, Uid: f.uid, AccountId: 9911, RelatedAccountId: f.bankID, RelatedId: 9912, Type: models.TRANSACTION_DB_TYPE_TRANSFER_IN, Amount: 500, RelatedAccountAmount: 500, TransactionTime: utils.GetMinTransactionTimeFromUnixTime(f.at + 2)})
+	require.NoError(t, err)
+	before := f.balance()
+	require.ErrorIs(t, Transactions.DeleteAllTransactionsOfAccount(nil, f.uid, f.bankID, 1), ErrInvestmentLinked)
+	require.ErrorIs(t, Transactions.DeleteAllTransactionsOfAccount(nil, f.uid, 9911, 1), ErrInvestmentLinked)
+	require.Equal(t, before, f.balance())
+	var system models.Account
+	has, err := f.engine.ID(9911).Get(&system)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.Equal(t, int64(500), system.Balance)
+}

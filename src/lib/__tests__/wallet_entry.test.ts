@@ -26,5 +26,7 @@ describe('wallet payment quantities and display currency',()=>{
   expect(positionValue(p,'USD')).toBeNull();
   const summary={fxRates:[{base:'USD',quote:'CNY',rate:'7.2',date:'2026-10-06',source:'fixture',state:'live',receivedAt:1}]} as WealthSummary;
   expect(positionValue(p,'USD',summary)).toBe('10');
+  expect(positionValue({...p,marketValue:''},'USD',summary)).toBeNull();
+  expect(positionValue({...p,marketValue:''},'CNY',summary)).toBeNull();
  });
 });

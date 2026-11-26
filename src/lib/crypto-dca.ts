@@ -22,6 +22,7 @@ export interface CryptoDCAInput {
     id: string; revision: number; requestKey: string; accountId: string; instrumentId: string; paymentInstrumentId: string;
     amount: string; dailyTime: string; startDate: string; timeZone: string; bookId: string;
 }
+export type CryptoDCASetupInput = Pick<CryptoDCAInput, 'instrumentId' | 'paymentInstrumentId' | 'amount' | 'dailyTime' | 'startDate' | 'timeZone'>;
 export const dcaSymbols: Record<string, string> = {
     'crypto:bitcoin': 'BTC', 'crypto:ethereum': 'ETH', 'crypto:solana': 'SOL',
     'crypto:tether': 'USDT', 'crypto:usd-coin': 'USDC'

@@ -6,6 +6,19 @@ Upstream packages/core/package.json declares the MIT license.
 Assets: packages/core/src/svgs/{exchanges,wallets}/background/
 Local copies: public/img/crypto-platforms/
 
+Additional copies (2026-10-08, same pinned revision):
+exchanges/background/kucoin.svg -> kucoin.svg
+exchanges/background/crypto-com.svg -> crypto-com.svg
+exchanges/background/gemini.svg -> gemini.svg
+wallets/background/okx.svg -> okx-wallet.svg
+wallets/background/imtoken.svg -> imtoken.svg
+wallets/background/token-pocket.svg -> tokenpocket.svg
+wallets/background/exodus.svg -> exodus.svg
+wallets/background/safe.svg -> safe.svg
+
+Provider-hosted PNG/WebP marks have separate provenance and rights recorded in
+licenses/crypto-platform-brand-NOTICE; they are not covered by this declaration.
+
 These logos identify user-selected account providers. Brand names and trademarks
 remain the property of their respective owners. No affiliation or endorsement
 is implied. The upstream repository revision does not include a LICENSE file;

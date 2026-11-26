@@ -25,6 +25,96 @@ type MonetaryIncomeService struct {
 var MonetaryIncome = &MonetaryIncomeService{ServiceUsingDB: ServiceUsingDB{container: datastore.Container}}
 var ErrMonetaryBinding = errs.NewNormalError(24, 1, 400, "请检查人民币资金账户、货币基金、起始日期和收入分类")
 var ErrMonetaryHistory = errs.NewNormalError(24, 2, 409, "已有收益记录，不能改写基金和起始日期；可暂停自动收益")
+var ErrMonetaryFlowHistory = errs.NewNormalError(24, 5, 409, "流水变更会影响已处理的货币基金收益，暂不能修改该历史资金记录")
+
+// guardMonetaryFlowHistory compares the actual cash contribution of the old
+// and new facts to every processed day. It must run in the ledger transaction;
+// processed-day identities are retained even if a yield bill was deleted.
+func guardMonetaryFlowHistory(sess *xorm.Session, uid int64, before, after *models.Transaction, ignoredAccounts ...map[int64]bool) error {
+	if before != nil && after != nil && before.Type == after.Type && before.AccountId == after.AccountId &&
+		before.RelatedAccountId == after.RelatedAccountId && before.Amount == after.Amount &&
+		before.RelatedAccountAmount == after.RelatedAccountAmount &&
+		utils.GetUnixTimeFromTransactionTime(before.TransactionTime) == utils.GetUnixTimeFromTransactionTime(after.TransactionTime) {
+		return nil
+	}
+	type flow struct {
+		account int64
+		at      int64
+		minor   decimal.Decimal
+		opening bool
+	}
+	var oldFlows, newFlows []flow
+	add := func(dst *[]flow, tx *models.Transaction) {
+		if tx == nil {
+			return
+		}
+		at := utils.GetUnixTimeFromTransactionTime(tx.TransactionTime)
+		amount := decimal.NewFromInt(tx.Amount)
+		switch tx.Type {
+		case models.TRANSACTION_DB_TYPE_MODIFY_BALANCE:
+			*dst = append(*dst, flow{tx.AccountId, at, decimal.NewFromInt(tx.RelatedAccountAmount), true})
+		case models.TRANSACTION_DB_TYPE_INCOME:
+			*dst = append(*dst, flow{tx.AccountId, at, amount, false})
+		case models.TRANSACTION_DB_TYPE_EXPENSE:
+			*dst = append(*dst, flow{tx.AccountId, at, amount.Neg(), false})
+		case models.TRANSACTION_DB_TYPE_TRANSFER_OUT:
+			*dst = append(*dst, flow{tx.AccountId, at, amount.Neg(), false}, flow{tx.RelatedAccountId, at, decimal.NewFromInt(tx.RelatedAccountAmount), false})
+		case models.TRANSACTION_DB_TYPE_TRANSFER_IN:
+			*dst = append(*dst, flow{tx.AccountId, at, amount, false}, flow{tx.RelatedAccountId, at, decimal.NewFromInt(tx.RelatedAccountAmount).Neg(), false})
+		}
+	}
+	add(&oldFlows, before)
+	add(&newFlows, after)
+	zone, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return err
+	}
+	accounts := map[int64]string{}
+	for _, f := range append(append([]flow{}, oldFlows...), newFlows...) {
+		if f.account > 0 && !f.minor.IsZero() {
+			date := time.Unix(f.at, 0).In(zone).Format("2006-01-02")
+			if current, exists := accounts[f.account]; !exists || date < current {
+				accounts[f.account] = date
+			}
+		}
+	}
+	for account, earliest := range accounts {
+		if len(ignoredAccounts) > 0 && ignoredAccounts[0][account] {
+			continue
+		}
+		var days []models.MonetaryIncomeDay
+		if err := sess.Where("uid=? AND account_id=? AND date>=?", uid, account, earliest).Find(&days); err != nil {
+			return err
+		}
+		for _, day := range days {
+			in, out, err := monetaryincome.Cutoffs(day.Date)
+			if err != nil {
+				return err
+			}
+			contribution := func(flows []flow) decimal.Decimal {
+				value := decimal.Zero
+				for _, f := range flows {
+					if f.account != account {
+						continue
+					}
+					cutoff := in.Unix()
+					if f.minor.IsNegative() || f.opening {
+						cutoff = out.Unix()
+					}
+					if f.at < cutoff {
+						value = value.Add(f.minor)
+					}
+				}
+				return value
+			}
+			if !contribution(oldFlows).Equal(contribution(newFlows)) {
+				return ErrMonetaryFlowHistory
+			}
+		}
+	}
+	return nil
+}
+
 var ErrMonetaryMove = errs.NewNormalError(24, 3, 409, "账户存在自动收益记录，请保留原账户，通过转账迁移余额")
 
 func (s *MonetaryIncomeService) TransactionDetail(c core.Context, uid, transactionID int64) (*models.MonetaryIncomeDay, error) {

@@ -2,6 +2,7 @@ import moment from 'moment-timezone';
 import type { EChartsOption } from 'echarts';
 import type { WealthSnapshot } from '@/models/investment.ts';
 import { LedgerDecimal, ledgerMoney } from '@/lib/ledger-display.ts';
+import { shouldAnimate } from '@/lib/motion.ts';
 
 export type WealthMetric = 'net' | 'valued';
 export interface WealthTrendPoint { at: number; amount: string | null }
@@ -25,14 +26,18 @@ export function wealthTrendPoints(rows: WealthSnapshot[], metric: WealthMetric, 
 }
 
 export function wealthTrendChart(points: WealthTrendPoint[], options: {
-    from: number; to: number; metric: WealthMetric; timeZone: string; dark: boolean;
+    from: number; to: number; metric: WealthMetric; timeZone: string; dark: boolean; hideAmounts?: boolean;
 }): EChartsOption {
-    const { from, to, metric, timeZone, dark } = options;
+    const { from, to, metric, timeZone, dark, hideAmounts = false } = options;
     const line = dark ? '#b4d4cb' : '#488e80', muted = dark ? '#94a6a4' : '#8b9697';
     const label = metric === 'net' ? '净资产' : '已估值资产';
     const longRange = moment.unix(to).diff(moment.unix(from), 'days') > 370;
+    const animate = shouldAnimate();
     return {
-        animation: false,
+        animation: animate,
+        animationDuration: animate ? 240 : 0,
+        animationDurationUpdate: animate ? 220 : 0,
+        animationEasing: 'cubicOut',
         grid: { left: 4, right: 12, top: 20, bottom: 12, containLabel: true },
         tooltip: {
             trigger: 'axis', confine: true, renderMode: 'richText', padding: [10, 12],
@@ -43,7 +48,7 @@ export function wealthTrendChart(points: WealthTrendPoint[], options: {
                 const item = Array.isArray(parameters) ? parameters[0] : parameters;
                 const point = item && points[item.dataIndex];
                 if (!point) return '';
-                return `${moment.unix(point.at).tz(timeZone).format('YYYY年M月D日 HH:mm')}\n${label}  ${ledgerMoney(point.amount)}`;
+                return `${moment.unix(point.at).tz(timeZone).format('YYYY年M月D日 HH:mm')}\n${label}  ${hideAmounts ? '••••' : ledgerMoney(point.amount)}`;
             }
         },
         xAxis: {
@@ -55,7 +60,7 @@ export function wealthTrendChart(points: WealthTrendPoint[], options: {
         yAxis: {
             type: 'value', scale: true, splitNumber: 3, axisLine: { show: false }, axisTick: { show: false },
             axisLabel: { color: muted, fontSize: 10, margin: 10,
-                formatter: (value: number) => Math.abs(value) >= 1e8 ? `${+(value / 1e8).toFixed(1)}亿` : Math.abs(value) >= 1e6 ? `${+(value / 1e4).toFixed(1)}万` : value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) },
+                formatter: (value: number) => hideAmounts ? '••' : Math.abs(value) >= 1e8 ? `${+(value / 1e8).toFixed(1)}亿` : Math.abs(value) >= 1e4 ? `${+(value / 1e4).toFixed(1)}万` : value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }) },
             splitLine: { lineStyle: { color: dark ? '#d0e4de0c' : '#738c8310', type: 'dashed' } }
         },
         series: [{

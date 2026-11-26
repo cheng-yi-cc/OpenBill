@@ -1,6 +1,7 @@
 import { computed, onScopeDispose, ref, watch } from 'vue';
 import { LedgerDecimal } from '@/lib/ledger-display.ts';
-export { LedgerDecimal, ledgerMoney, ledgerTotals, ledgerSignedAmount } from '@/lib/ledger-display.ts';
+import { projectRefundEntry } from '@/lib/refund-ledger.ts';
+export { LedgerDecimal, ledgerMoney, ledgerCurrencyMoney, ledgerTotals, ledgerSignedAmount } from '@/lib/ledger-display.ts';
 import moment from 'moment-timezone';
 import services from '@/lib/services.ts';
 import { investmentError } from '@/lib/investments.ts';
@@ -18,9 +19,10 @@ export interface LedgerEntry {
     currency: string; amount: string; cny: string | null; hidden: boolean;
     categoryId: string; primaryCategoryId: string; primaryCategory: string; comment: string; tags: string[];
     bookId: string; accountId: string; destinationAccountId: string; tagIds: string[]; investment: boolean;
-    investmentEventId?: string; excludeFromStatistics?: boolean; reimbursementAccountId?: string; reimbursementReceiptId?: string;
+    investmentEventId?: string; excludeFromStatistics?: boolean; excludeFromBudget?: boolean; reimbursementAccountId?: string; reimbursementReceiptId?: string;
     wallet?: boolean;
-    discountAmount?: string; transferFeeParentId?: string;
+    discountAmount?: string; transferFeeParentId?: string; accountFee?: string;
+    originalAmount?: string; refundedAmount?: string; refundExpenseId?: string; refundId?: string; refundExcess?: boolean;
     bookName?: string; icon?: string; iconType?: number; color?: string; transferDirection?: 'in'|'out';
     accountIcon?: string; accountIconType?: number; pictures?: TransactionPictureInfoBasicResponse[];
     location?: string; reimbursementClosedAt?: number; destinationAccount?: string; sourceAccountName?:string; destinationCurrency?:string; destinationAmount?:string; transferFeeAmount?:string; debtDueDate?:string;
@@ -51,6 +53,16 @@ export function useMobileLedger(options: { applyFilters?: () => boolean; account
         error.value = '';
         loading.value = true;
     }, { flush: 'sync' });
+    if (options.bookIds) {
+        // Invalidate an in-flight result synchronously, including when the
+        // caller switches away and back before either request returns.
+        watch(() => options.bookIds!().join(','), () => {
+            requestNumber++;
+            allEntries.value = [];
+            error.value = '';
+            loading.value = true;
+        }, { flush: 'sync' });
+    }
     onScopeDispose(() => { requestNumber++; });
 
     function normalize(item: TransactionInfoResponse): LedgerEntry {
@@ -60,13 +72,16 @@ export function useMobileLedger(options: { applyFilters?: () => boolean; account
         const parent = category?.parentId ? categories.allTransactionCategoriesMap[category.parentId] : undefined;
         const incoming = !!options.accountId && item.type === 4 && item.destinationAccountId === options.accountId();
         const currency = item.wallet?.currency || (incoming ? destination : account)?.currency || '';
-        const amount = item.wallet?.amount || new LedgerDecimal((incoming ? item.destinationAmount : item.sourceAmount).toString()).div(100).toString();
+        const refundAccountView = !!options.accountId && item.refund?.kind === 'cash';
+        const sourceAmount = new LedgerDecimal((incoming ? item.destinationAmount : item.sourceAmount).toString()).div(100);
+        const amount = item.wallet?.amount || (refundAccountView ? sourceAmount.abs() : sourceAmount).toString();
         // Legacy daily transactions have no confirmed historical FX. Never substitute today's FX.
         const converted = item.wallet ? new LedgerDecimal(item.sourceAmount).div(100).toFixed() : currency === 'CNY' ? amount : null;
         return {
-            id: item.id, type: item.type, excludeFromStatistics: !!item.excludeFromStatistics || (!!item.reimbursementAccountId && item.reimbursementAccountId !== '0'), reimbursementAccountId: item.reimbursementAccountId, reimbursementReceiptId: item.reimbursementReceiptId, day: moment.unix(item.time).tz(scope.timeZone).format('YYYY-MM-DD'), time: item.time,
+            id: item.id, type: refundAccountView ? 2 : item.type, excludeFromStatistics: !!item.excludeFromStatistics || (!!item.reimbursementAccountId && item.reimbursementAccountId !== '0'), reimbursementAccountId: item.reimbursementAccountId, reimbursementReceiptId: item.reimbursementReceiptId, day: moment.unix(item.time).tz(scope.timeZone).format('YYYY-MM-DD'), time: item.time,
+            excludeFromBudget: item.excludeFromBudget ?? !!item.excludeFromStatistics,
             discountAmount: item.discountAmount || '0', transferFeeParentId:item.transferFeeParentId,
-            title: item.investmentEventId && !item.wallet ? '投资结算' : category?.name || ({ 1: '余额调整', 2: '收入', 3: '支出', 4: '账户转账' }[item.type] || '账户转账'),
+            title: refundAccountView ? '退款' : item.investmentEventId && !item.wallet ? (item.investmentSettlement ? `${item.investmentSettlement.type === 'BUY' ? '买入' : '卖出'}-${item.investmentSettlement.name}` : ['投资买入','投资卖出'].includes(item.comment) ? item.comment : '投资结算') : category?.name || ({ 1: '余额调整', 2: '收入', 3: '支出', 4: '账户转账' }[item.type] || '账户转账'),
             primaryCategory: parent?.name || category?.name || '未分类', primaryCategoryId: parent?.id || item.categoryId, categoryId: item.categoryId,
             bookId: item.bookId || '', accountId: item.wallet?.accountId || item.sourceAccountId, destinationAccountId: item.destinationAccountId,
             tagIds: item.tagIds || [], investment: !!item.investmentEventId && !item.wallet, investmentEventId: item.investmentEventId, wallet:!!item.wallet,
@@ -76,28 +91,46 @@ export function useMobileLedger(options: { applyFilters?: () => boolean; account
             bookName: books.allBooks.find(b=>b.id===item.bookId)?.name || '日常账本', icon: category?.icon, iconType: category?.iconType, color: category?.color,
             accountIcon: account?.icon, accountIconType: account?.iconType, pictures: item.pictures,
             location: item.locationName || (item.geoLocation ? `${item.geoLocation.latitude}, ${item.geoLocation.longitude}` : ''),
+            refundExpenseId: item.refund?.expenseId, refundId: item.refund?.refundId,
             reimbursementClosedAt: item.reimbursementClosedAt, destinationAccount: destination?.name, sourceAccountName:account?.name, destinationCurrency:destination?.currency, destinationAmount:item.type===4?new LedgerDecimal(item.destinationAmount).div(100).toString():undefined, transferFeeAmount:item.transferFeeAmount, debtDueDate:item.debtDueDate,
             transferDirection: options.accountId && item.type===4 ? incoming ? 'in' : 'out' : undefined
         };
     }
-    async function load(startTime: number, endTime: number): Promise<void> {
+    let lastLoadedKey = '';
+    async function load(startTime: number, endTime: number, opts?: { silent?: boolean }): Promise<void> {
         const version = ++requestNumber;
         const isCurrentScope = options.bookIds ? () => true : books.captureReportScope();
-        loading.value = true;
+        const selectedBookIds = [...(options.bookIds?.() || books.selectedBookIds)];
+        const scopeKey = `${Math.max(0, startTime)}:${endTime}:${selectedBookIds.join(',')}`;
+        const preserveExisting = (opts?.silent ?? true) && allEntries.value.length > 0 && lastLoadedKey === scopeKey;
+        if (!preserveExisting) {
+            loading.value = true;
+            allEntries.value = [];
+        }
         error.value = '';
-        allEntries.value = [];
         try {
             const [, , , , response] = await Promise.all([
                 accounts.loadAllAccounts({ force: true }).catch(keepUpToDate), categories.loadAllCategories({ force: false }).catch(keepUpToDate),
-                tags.loadAllTags({ force: false }).catch(keepUpToDate), books.loadBooks(), services.getAllTransactions({ startTime: Math.max(0,startTime), endTime, withPictures: true, bookIds: options.bookIds?.() || books.selectedBookIds })
+                tags.loadAllTags({ force: false }).catch(keepUpToDate), books.loadBooks(), services.getAllTransactions({ startTime: Math.max(0,startTime), endTime, withPictures: true, bookIds: [] })
             ]);
             if (version !== requestNumber || !isCurrentScope()) return;
             if (!response.data.success) throw new Error('账单加载失败，请重试。');
             const items = response.data.result;
+            if (items.some(item => item.refund?.excess?.categoryId && !categories.allTransactionCategoriesMap[item.refund.excess.categoryId])) {
+                await categories.loadAllCategories({ force: true }).catch(keepUpToDate);
+            }
             if (version !== requestNumber || !isCurrentScope()) return;
-            allEntries.value = items.map(normalize).sort((a, b) => b.time - a.time || b.id.localeCompare(a.id));
+            const tagNames = Object.fromEntries(Object.entries(tags.allTransactionTagsMap).map(([id, tag]) => [id, tag.name]));
+            const bookNames = Object.fromEntries(books.allBooks.map(book => [book.id, book.name]));
+            allEntries.value = items.flatMap(item => projectRefundEntry(normalize(item), item.refund, categories.allTransactionCategoriesMap, tagNames, bookNames))
+                .filter(item => !selectedBookIds.length || selectedBookIds.includes(item.bookId))
+                .sort((a, b) => b.time - a.time || b.id.localeCompare(a.id));
+            lastLoadedKey = scopeKey;
         } catch (cause) {
-            if (version === requestNumber && isCurrentScope()) { allEntries.value = []; error.value = investmentError(cause); }
+            if (version === requestNumber && isCurrentScope()) {
+                if (!preserveExisting) allEntries.value = [];
+                error.value = investmentError(cause, 'read');
+            }
         } finally { if (version === requestNumber) loading.value = false; }
     }
     async function loadAccount(more=false):Promise<void> {

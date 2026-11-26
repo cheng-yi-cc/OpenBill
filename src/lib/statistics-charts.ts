@@ -4,13 +4,19 @@ import type { ChartBucket, ReportGroup, StatisticsMetric } from '@/lib/statistic
 export const chartColors = ['#ff666b', '#55bda5', '#edb54d', '#7096de', '#b08acf', '#dd8b69', '#64b9ce', '#9eaf68', '#d679a4', '#8495a4'];
 export const metricLabels = { expense: '支出', income: '收入', balance: '结余' };
 export const metricColors = { expense: '#ff626a', income: '#48b69d', balance: '#80a6cd' };
+function formatAxisAmount(value: number): string {
+    const abs = Math.abs(value);
+    if (abs >= 1e8) return `${+(value / 1e8).toFixed(1)}亿`;
+    if (abs >= 1e4) return `${+(value / 1e4).toFixed(1)}万`;
+    return value.toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+}
 export function cashChart(buckets: ChartBucket[], metrics: StatisticsMetric[], kind: 'bar' | 'line', labels = false): EChartsOption {
-    return { grid: { left: 42, right: 15, top: labels ? 40 : 28, bottom: buckets.length > 62 ? 58 : 28 },
+    return { grid: { left: 8, right: 12, top: labels ? 40 : 28, bottom: buckets.length > 62 ? 54 : 18, containLabel: true },
         tooltip: { trigger: 'axis', confine: true },
         legend: { show: metrics.length > 1, top: 0, textStyle: { color: '#89979d', fontSize: 10 } },
         xAxis: { type: 'category', data: buckets.map(b => b.label), axisLabel: { fontSize: 10, color: '#89979d' }, axisTick: { show: false }, axisLine: { lineStyle: { color: '#71808755' } } },
-        yAxis: { type: 'value', splitNumber: 3, axisLabel: { fontSize: 10, color: '#89979d' }, splitLine: { lineStyle: { color: '#71808722' } } },
-        dataZoom: buckets.length > 62 ? [{ type: 'slider', height: 16, bottom: 8, startValue: Math.max(0, buckets.length - 31), endValue: buckets.length - 1 }] : [],
+        yAxis: { type: 'value', splitNumber: 3, axisLabel: { fontSize: 10, color: '#89979d', formatter: formatAxisAmount }, splitLine: { lineStyle: { color: '#71808722' } } },
+        dataZoom: buckets.length > 62 ? [{ type: 'slider', height: 16, bottom: 6, startValue: Math.max(0, buckets.length - 31), endValue: buckets.length - 1 }] : [],
         series: metrics.map(metric => ({ name: metricLabels[metric], type: kind, data: buckets.map(b => b.complete ? new LedgerDecimal(b[metric]).toNumber() : null), itemStyle: { color: metricColors[metric], borderRadius: kind === 'bar' ? [3, 3, 0, 0] : 0 }, barMaxWidth: 18, connectNulls: false, symbolSize: 4, label: { show: labels, position: 'top', fontSize: 9, color: metricColors[metric] } })) };
 }
 export function shareChart(groups: ReportGroup[], metric: StatisticsMetric, labels: boolean): EChartsOption {

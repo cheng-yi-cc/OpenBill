@@ -1,6 +1,6 @@
 <template>
     <f7-page class="cy-main-page cy-mobile-surface">
-        <f7-navbar title="偏好设置" back-link="返回" />
+        <f7-navbar title="日历设置" back-link="返回" />
         <main class="cy-page-body">
             <section class="cy-panel cy-preferences">
                 <label class="cy-preference"><span><strong>周起始日</strong><small>设置日历视图中每周的起始日期</small></span><select aria-label="周起始日" :value="settings.appSettings.calendarWeekStart" @change="setWeek"><option v-for="(day,index) in weekdays" :key="index" :value="index">{{ day }}</option></select></label>

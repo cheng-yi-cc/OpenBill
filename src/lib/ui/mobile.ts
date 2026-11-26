@@ -1,8 +1,36 @@
 import { type Ref, watch } from 'vue';
 import { f7, f7ready } from 'framework7-vue';
-import type { Dialog, ColorPicker, Router } from 'framework7/types';
+import type { Dialog, ColorPicker, Router, Toast } from 'framework7/types';
 
 import { useI18n } from '@/locales/helpers.ts';
+import { isNativePersonalMode } from '@/lib/native.ts';
+import { formatAppError } from '@/lib/error-message.ts';
+
+let activeToast: Toast.Toast | null = null;
+const backOverlayHandlers: (() => boolean)[] = [];
+
+export function registerBackOverlayHandler(handler: () => boolean): () => void {
+    backOverlayHandlers.push(handler);
+    return () => {
+        const index = backOverlayHandlers.lastIndexOf(handler);
+        if (index >= 0) backOverlayHandlers.splice(index, 1);
+    };
+}
+
+export function runBackOverlayHandlers(): boolean {
+    for (let i = backOverlayHandlers.length - 1; i >= 0; i--) {
+        if (backOverlayHandlers[i]?.()) return true;
+    }
+    return false;
+}
+
+export interface ConfirmDialogOptions {
+    title?: string;
+    confirmText?: string;
+    cancelText?: string;
+    destructive?: boolean;
+    raw?: boolean;
+}
 
 import type { ColorValue } from '@/core/color.ts';
 import { TextDirection } from '@/core/text.ts';
@@ -106,6 +134,14 @@ export function autoChangeTextareaSize(el: HTMLElement): void {
     });
 }
 
+export const FONT_SIZE_SCALES: readonly number[] = [0.9, 1, 1.08, 1.15, 1.22, 1.3, 1.38];
+export const FONT_SIZE_LABELS: readonly string[] = ['较小', '标准', '偏大', '大号', '特大', '超大', '极大'];
+
+export function getFontSizeScale(type: number): number {
+    const idx = Math.max(0, Math.min(FONT_SIZE_SCALES.length - 1, Number.isFinite(type) ? Math.round(type) : 1));
+    return FONT_SIZE_SCALES[idx] ?? 1;
+}
+
 export function setAppFontSize(type: number): void {
     const htmlElement = f7.$('html');
     const allFontSizes = FontSize.values();
@@ -119,6 +155,8 @@ export function setAppFontSize(type: number): void {
             htmlElement.removeClass(fontSizeType.className);
         }
     }
+
+    document.documentElement.style.setProperty('--cy-font-scale', String(getFontSizeScale(type)));
 }
 
 export function getFontSizePreviewClassName(type: number): string {
@@ -205,15 +243,24 @@ export function useI18nUIComponents() {
         });
     }
 
-    function showAlert(message: string, confirmCallback?: (dialog: Dialog.Dialog, e: Event) => void): void {
+    function safeMessage(message: string, raw?: boolean): string {
+        if (!message) return '';
+        // Avoid passing already-localized Chinese strings or dynamic user names
+        // containing vue-i18n meta characters (|, @, {, }) through tt().
+        if (raw || /[\u4e00-\u9fff]/.test(message)) return message;
+        return te(message);
+    }
+
+    function showAlert(message: string, confirmCallback?: (dialog: Dialog.Dialog, e: Event) => void, options?: { title?: string; confirmText?: string; raw?: boolean }): void {
+        const displayText = typeof message === 'string' ? safeMessage(message, options?.raw) : formatAppError(message, 'read');
         f7ready((f7) => {
             f7.dialog.create({
-                title: tt('global.app.title'),
-                text: te(message),
+                title: options?.title ? safeMessage(options.title, options.raw) : tt('global.app.title'),
+                text: displayText,
                 animate: isEnableAnimate(),
                 buttons: [
                     {
-                        text: tt('OK'),
+                        text: options?.confirmText ? safeMessage(options.confirmText, options.raw) : tt('OK'),
                         onClick: confirmCallback
                     }
                 ]
@@ -221,35 +268,39 @@ export function useI18nUIComponents() {
         });
     }
 
-    function showConfirm(message: string, confirmCallback?: (dialog: Dialog.Dialog, e: Event) => void, cancelCallback?: (dialog: Dialog.Dialog, e: Event) => void): void {
+    function showConfirm(message: string, confirmCallback?: (dialog: Dialog.Dialog, e: Event) => void, cancelCallback?: (dialog: Dialog.Dialog, e: Event) => void, options?: ConfirmDialogOptions): void {
         const textDirection = getCurrentLanguageTextDirection();
 
         const cancelButton: Dialog.DialogButton = {
-            text: tt('Cancel'),
+            text: options?.cancelText ? safeMessage(options.cancelText, options.raw) : tt('Cancel'),
+            cssClass: 'cy-dialog-cancel',
             onClick: cancelCallback
         };
 
         const confirmButton: Dialog.DialogButton = {
-            text: tt('OK'),
+            text: options?.confirmText ? safeMessage(options.confirmText, options.raw) : tt('OK'),
             strong: true,
+            color: options?.destructive ? 'red' : undefined,
             onClick: confirmCallback
         };
 
         f7ready((f7) => {
             f7.dialog.create({
-                title: tt('global.app.title'),
-                text: tt(message),
+                title: options?.title ? safeMessage(options.title, options.raw) : tt('global.app.title'),
+                text: safeMessage(message, options?.raw),
                 animate: isEnableAnimate(),
                 buttons: textDirection == TextDirection.RTL ? [confirmButton, cancelButton] : [cancelButton, confirmButton]
             }).open();
         });
     }
 
-    function showPrompt(message: string, currentValue?: string, confirmCallback?: (value: string, dialog: Dialog.Dialog, e: Event) => void, cancelCallback?: (value: string, dialog: Dialog.Dialog, e: Event) => void): void {
+    function showPrompt(message: string, currentValue?: string, confirmCallback?: (value: string, dialog: Dialog.Dialog, e: Event) => void, cancelCallback?: (value: string, dialog: Dialog.Dialog, e: Event) => void, options?: { title?: string; placeholder?: string; raw?: boolean }): void {
         const textDirection = getCurrentLanguageTextDirection();
+        const label = safeMessage(message, options?.raw);
 
         const cancelButton: Dialog.DialogButton = {
             text: tt('Cancel'),
+            cssClass: 'cy-dialog-cancel',
             onClick: (dialog, event) => {
                 if (cancelCallback) {
                     const inputValue = dialog.$el.find('.dialog-input').val();
@@ -271,11 +322,21 @@ export function useI18nUIComponents() {
 
         f7ready((f7) => {
             f7.dialog.create({
-                title: tt('global.app.title'),
-                text: tt(message),
-                content: `<div class="dialog-input-field input"><input type="text" class="dialog-input" value="${currentValue || ''}" placeholder="${tt(message)}"></div>`,
+                title: options?.title ? safeMessage(options.title, options.raw) : tt('global.app.title'),
+                text: label,
+                content: '<div class="dialog-input-field input"><input type="text" class="dialog-input"></div>',
                 animate: isEnableAnimate(),
-                buttons: textDirection == TextDirection.RTL ? [confirmButton, cancelButton] : [cancelButton, confirmButton]
+                buttons: textDirection == TextDirection.RTL ? [confirmButton, cancelButton] : [cancelButton, confirmButton],
+                on: {
+                    open(dialog) {
+                        const input = dialog.$el[0]?.querySelector<HTMLInputElement>('.dialog-input');
+                        if (input) {
+                            input.value = currentValue || '';
+                            input.placeholder = options?.placeholder ? safeMessage(options.placeholder, options.raw) : label;
+                            setTimeout(() => input.focus(), 60);
+                        }
+                    }
+                }
             }).open();
         });
     }
@@ -302,20 +363,41 @@ export function useI18nUIComponents() {
     }
 
     function showToast(message: string, timeout?: number): void {
+        const text = typeof message === 'string' ? safeMessage(message) : formatAppError(message, 'read');
+        if (!text) return;
+        const duration = timeout || Math.min(4500, Math.max(2000, text.length * 110));
         f7ready((f7) => {
-            f7.toast.create({
-                text: te(message),
-                position: 'center',
-                closeTimeout: timeout || 1500
-            }).open();
+            if (activeToast) {
+                try { activeToast.close(); } catch { /* ignore */ }
+                activeToast = null;
+            }
+            const toast = f7.toast.create({
+                text,
+                position: 'bottom',
+                cssClass: 'cy-toast-bottom',
+                closeTimeout: duration,
+                destroyOnClose: true,
+                on: {
+                    close() {
+                        if (activeToast === toast) activeToast = null;
+                    }
+                }
+            });
+            activeToast = toast;
+            toast.open();
         });
     }
 
     function openExternalUrl(url: string): void {
+        if (isNativePersonalMode()) {
+            window.open(url, '_blank');
+            return;
+        }
         const textDirection = getCurrentLanguageTextDirection();
 
         const cancelButton: Dialog.DialogButton = {
-            text: tt('Cancel')
+            text: tt('Cancel'),
+            cssClass: 'cy-dialog-cancel'
         };
 
         const confirmButton: Dialog.DialogButton = {

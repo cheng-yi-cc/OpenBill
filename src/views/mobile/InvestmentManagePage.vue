@@ -11,9 +11,11 @@
 import {ref} from 'vue';
 import {useInvestmentData,type HoldingRow} from '@/lib/investment-mobile.ts';
 import {investments,investmentError} from '@/lib/investments.ts';
+import {useI18nUIComponents} from '@/lib/ui/mobile.ts';
 import AccountOptionsMenu from '@/components/mobile/AccountOptionsMenu.vue';
 import InstrumentSearch from '@/components/InstrumentSearch.vue';
+const {showToast}=useI18nUIComponents();
 const {rows,accounts,error,load}=useInvestmentData(),binding=ref('');
-async function toggle(row:HoldingRow):Promise<void>{try{await investments.saveProfile({...row.profile,hidden:!row.profile.hidden});await load();}catch(e){error.value=investmentError(e);}}
+async function toggle(row:HoldingRow):Promise<void>{try{const next=!row.profile.hidden;await investments.saveProfile({...row.profile,hidden:next});showToast(next?`已隐藏「${row.name}」`:`已恢复显示「${row.name}」`);await load();}catch(e){error.value=investmentError(e);}}
 function searchMarket(r:HoldingRow):string{const m=r.asset?.market||'';return m.startsWith('CN_')&&m!=='CN_FUND'?'CN':m||'CN_FUND';}
 </script>

@@ -10,15 +10,34 @@ import { BarChart, LineChart, PieChart, SankeyChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent, LegendComponent, DataZoomComponent } from 'echarts/components';
 import type { EChartsOption } from 'echarts';
 import { useEnvironmentsStore } from '@/stores/environment.ts';
+import { useSettingsStore } from '@/stores/setting.ts';
+import { shouldAnimate } from '@/lib/motion.ts';
 use([CanvasRenderer, BarChart, LineChart, PieChart, SankeyChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent]);
 const props = defineProps<{ option: EChartsOption; height?: number }>();
-const emit = defineEmits<{ select: [value: { name: string; dataIndex: number; seriesName: string }] }>();
+const emit = defineEmits<{ select: [value: { name: string; dataIndex: number; seriesName: string; dataId?: string }] }>();
 const environments = useEnvironmentsStore();
-const styledOption = computed<EChartsOption>(() => ({
-    backgroundColor: 'transparent', animationDuration: 250,
-    textStyle: { color: environments.framework7DarkMode ? '#b9c6cc' : '#56666b', fontFamily: 'inherit', fontSize: 10 },
-    ...props.option
-}));
-function clicked(value: unknown) { emit('select', value as { name: string; dataIndex: number; seriesName: string }); }
+const settings = useSettingsStore();
+const styledOption = computed<EChartsOption>(() => {
+    const animate = shouldAnimate(settings.appSettings.animate);
+    return {
+        backgroundColor: 'transparent',
+        animation: animate,
+        animationDuration: animate ? 240 : 0,
+        animationDurationUpdate: animate ? 220 : 0,
+        animationEasing: 'cubicOut',
+        animationEasingUpdate: 'cubicOut',
+        textStyle: { color: environments.framework7DarkMode ? '#b9c6cc' : '#56666b', fontFamily: 'inherit', fontSize: 10 },
+        ...props.option
+    };
+});
+function clicked(value: unknown) {
+    const raw = value as { name?: string; dataIndex?: number; seriesName?: string; data?: { id?: string } };
+    emit('select', {
+        name: raw?.name || '',
+        dataIndex: typeof raw?.dataIndex === 'number' ? raw.dataIndex : -1,
+        seriesName: raw?.seriesName || '',
+        dataId: typeof raw?.data?.id === 'string' ? raw.data.id : undefined
+    });
+}
 </script>
 <style scoped>.cy-stat-chart{width:100%;min-width:0;touch-action:pan-y}</style>

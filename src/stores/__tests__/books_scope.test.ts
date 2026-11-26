@@ -8,6 +8,11 @@ import { useTransactionsStore } from '../transaction.ts';
 import { useStatisticsStore } from '../statistics.ts';
 import { useOverviewStore } from '../overview.ts';
 import { useExplorersStore } from '../explorer.ts';
+import { useTransactionCategoriesStore } from '../transactionCategory.ts';
+import { useAccountsStore } from '../account.ts';
+import { useUserStore } from '../user.ts';
+import { EMPTY_USER_BASIC_INFO } from '@/models/user.ts';
+import { TransactionCategory } from '@/models/transaction_category.ts';
 import services from '@/lib/services.ts';
 
 vi.hoisted(() => {
@@ -34,6 +39,23 @@ function response<T>(result: T): AxiosResponse<ApiResponse<T>> {
 beforeEach(() => { setActivePinia(createPinia()); });
 
 describe('book scope request races', () => {
+    it('includes unassigned refund excess in CNY reports without adding a real account', () => {
+        const statistics = useStatisticsStore(), categories = useTransactionCategoriesStore(), accounts = useAccountsStore(), user = useUserStore();
+        user.currentUserBasicInfo = { ...EMPTY_USER_BASIC_INFO, defaultCurrency: 'CNY' };
+        const base = { type:1, icon:'1', iconType:0, color:'12786f', comment:'', displayOrder:1, hidden:false };
+        categories.allTransactionCategoriesMap = {
+            parent: TransactionCategory.of({...base,id:'parent',parentId:'0',name:'收入'}),
+            child: TransactionCategory.of({...base,id:'child',parentId:'parent',name:'其他收入'})
+        };
+        statistics.transactionCategoryStatisticsData = {startTime:1,endTime:2,items:[
+            {categoryId:'child',accountId:'0',amount:'100',currency:'CNY',unassigned:true},
+            {categoryId:'child',accountId:'0',amount:'200',currency:'USD',unassigned:true}
+        ]};
+        const report = statistics.categoricalOverviewAnalysisData;
+        expect(report?.totalIncome.toString()).toBe('100');
+        expect(report?.items.some(item => item.name === '无账户')).toBe(true);
+        expect(accounts.allAccountsMap['refund_unassigned']).toBeUndefined();
+    });
     it('discards both late list results and late errors without clearing the latest scope', async () => {
         const books = useBooksStore(), transactions = useTransactionsStore();
         const lateResult = deferred<Awaited<ReturnType<typeof services.getTransactions>>>();

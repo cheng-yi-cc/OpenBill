@@ -8,6 +8,7 @@
 ## 手机工作区
 
 - `GET /api/v1/ledger/items?kind=wish|keyword`：当前用户的愿望/关键词。
+- `GET /api/v1/ledger/relations?id=<transactionId>`：查询当前账单双向手动关联的账单及独立退款流水 ID 列表（`{ids}`）。
 - `POST /api/v1/ledger/items/save`：`{id, kind, revision, data}`；新增 `id=""`、`revision="0"`，编辑必须携带已读修订号。
 - `POST /api/v1/ledger/items/delete`：`{id, kind, revision}`；只删除当前用户和匹配修订的项目。
 - `GET /api/v1/ledger/imports`：导入批次 `{id,name,count,createdAt,deleted}`，`count` 为十进制整数字符串。
@@ -15,7 +16,7 @@
 
 原有 `POST /transactions/import.json` 请求可附 `batchId`（最多 64 字符）及 `sourceName`（最多 128 字符）；重试保持同一 ID 和内容。批次入账、指纹和交易 ID 在同一事务保存。撤回后保留防重身份，该 ID 不得再次导入。
 
-普通账单请求/响应增加 `transferFeeAmount`（最多两位小数的带符号字符串）、`transferFeeCategoryId`、`debtDueDate`（YYYY-MM-DD 或空串）、`locationName`（最多 200 字）。`transferFeeParentId` 仅由响应返回关联的原转账 ID。手续费仅适用于转出账单，正数选支出分类、负数选收入分类；关联费用不能单独编辑。约定日期只支持借入/借出，响应的日历事项含 `transactionId`；提醒变更请修改原账单。修改请求省略扩展字段则保留旧值，清空日期须显式传空串。模型定义仍是完整字段与约束的依据。
+普通账单请求/响应增加 `transferFeeAmount`（最多两位小数的带符号字符串）、`transferFeeCategoryId`、`debtDueDate`（YYYY-MM-DD 或空串）、`locationName`（最多 200 字）、`locationAddress`（最多 500 字）和 `linkedTransactionIds`（最多 20 个同用户非自身有效账单 ID）。`transferFeeParentId` 仅由响应返回关联的原转账 ID。手续费仅适用于转出账单，正数选支出分类、负数选收入分类；关联费用不能单独编辑。约定日期只支持借入/借出，响应的日历事项含 `transactionId`；提醒变更请修改原账单。修改请求省略扩展字段则保留旧值，清空日期须显式传空串。模型定义仍是完整字段与约束的依据。
 
 愿望保存示例（`POST /ledger/items/save`，不产生资金流水）：
 
@@ -67,7 +68,7 @@
 
 ## 加密账户与钱包品牌
 
-`POST /investments/accounts/crypto` 接收 `{name, kind, platform, bookId, holdings:[{instrumentId, quantity}]}`，须携带 `Idempotency-Key`；账户与已有持仓在同一事务保存，重试不能重复增加数量。`kind="WALLET"` 时 `platform` 可省略或传空字符串；选 Bitget Wallet 时为 `bitget-wallet`。`kind="EXCHANGE"` 仍须提供匹配的交易所，Bitget 交易所为 `bitget`。非空的未知品牌或类型不匹配仍被拒绝。
+`POST /investments/accounts/crypto` 接收 `{name, kind, platform, bookId, holdings:[{instrumentId, quantity, cost, costExchangeRate}], dcaPlans:[...]}`, 须携带 `Idempotency-Key`；账户、已有持仓（含可选已知总成本/美元成本汇率）及交易所首次每日定投在同一事务保存，重试不能重复增加。支持 25 个常用交易所/钱包标识（及自定义入口 `other-exchange`）；`kind="WALLET"` 时 `platform` 可省略或传空字符串，`kind="EXCHANGE"` 须传匹配的交易所。非空的未知品牌或类型不匹配仍被拒绝。
 
 `POST /investments/accounts/update` 提交 `{id,name,kind,platform,instruments}` 及可选的货币/收付设置；钱包品牌采用相同规则，传 `platform=""` 可取消品牌选择。编辑品牌不改变账户类型、已有数量与交易流水；持有中的币种不能移除。
 
@@ -75,7 +76,11 @@
 
 钱包收支复用 `/investments/events`、`/preview`、`/{id}/revise`、`/{id}/void`，创建须带 `Idempotency-Key`，修订和撤销须带最新 `version`。事件 `type` 为 `INCOME` 或 `EXPENSE`，`amount` 为原币金额（正数、最多两位小数），`exchangeRate` 为原币到人民币的历史汇率；人民币为 `1`。`instrumentId/quantity` 表示第一种实际收付币种，可附 `additionalMovements:[{instrumentId,quantity}]` 表示第二种支出币种，收入只允许一种。须提供 `wallet:{currency,categoryId,fxDate,fxSource}`，日期为 `YYYY-MM-DD`，分类须为对应收支的有效子分类。数量/汇率为受限十进制字符串；`fee="0"`、`cost=null`，无现金账户或兑换结算字段，费用计入实际金额及数量。
 
+`wallet` 可选 `excludeFromStatistics`、`excludeFromBudget`、`hideAmount` 布尔值、`locationName` 字符串（最多 200 字符）、`discountAmount` 优惠字符串、`tagIds` 字符串数组（最多 10 个）及 `pictureIds` 字符串数组（附件照片）。收支和预算排除相互独立；创建时省略均按不排除、不隐藏、无优惠/附件/地点/标签处理。修订时省略这些字段保留旧值，显式 `false`、空字符串或空数组可清除。已关联的标签后来隐藏时可保留，不可新增隐藏或他人标签；标签索引与附件关联随流水修订、撤销在同一事务更新。原钱包账单的分类后来被全局隐藏时，仅同账本、同收支类型保留原分类的修订可继续使用，仍校验分类归属和有效性。报销与地图坐标尚未支持。
+
 收支、币种成本回放、一笔人民币统计账单和快照失效原子完成；修订/撤销同步重建持仓和关联账单。系统统计账户不计入资产余额，普通账单接口不能单独改删这笔关联记录。账单响应附 `wallet:{accountId,accountName,currency,amount,exchangeRate,fxDate}`，从原投资事实解析；人民币统计金额按分四舍五入，前端显示原币金额。`GET /wealth/summary` 的 `fxRates` 提供估值所用汇率，不能据当前行情改写历史收支。
+
+投资买卖关联的资金结算账单可附只读 `investmentSettlement:{type,name}`，`type` 为 `BUY` 或 `SELL`；名称优先使用该投资账户当前持仓显示名称，否则使用产品名称。该字段只用于展示，可能因记录缺失或读取失败省略，客户端应回退到通用结算名称；金额与持仓仍以账单和投资事实为准。
 
 钱包支出示例：将账户、账本、分类和币种 ID 换为当前用户的有效值，先提交 `/investments/events/preview`，确认后用相同内容提交 `/investments/events`，后者携带 `Idempotency-Key`。此例扣除 10 USD24 和 5 USDC，以实际确认的 7.2 汇率生成一笔 108 元支出。
 
@@ -118,7 +123,8 @@
 | 方法 | 路径（省略 `/api/v1`） |
 |---|---|
 | GET | `/books/list` |
-| GET | `/ledger/items`、`/ledger/imports` |
+| GET | `/ledger/items`、`/ledger/relations`、`/ledger/imports` |
+| GET / POST | `/refunds`、`/refunds/create`、`/refunds/update`、`/refunds/excess`、`/refunds/delete` |
 | POST | `/ledger/items/save`、`/ledger/items/delete`、`/ledger/imports/undo` |
 | GET / POST | `/statistics/preferences` |
 | GET | `/statistics/budgets`、`/statistics/notes`、`/statistics/auxiliary` |
@@ -153,7 +159,9 @@
 | POST | `/assets/deposits/sync` |
 | POST | `/books/create` |
 | POST | `/books/modify` |
+| POST | `/books/category-visibility` |
 | POST | `/books/move` |
+| POST | `/books/move-all` |
 | GET | `/investments/settings` |
 | GET | `/investments/dca` |
 | POST | `/investments/dca/save`、`/investments/dca/enabled`、`/investments/dca/sync` |
@@ -199,10 +207,12 @@
 
 单笔 `transactions/get.json` 返回实际 `createdAt`（Unix 秒）、`scheduledCreated`，已关联货币基金日结记录时附 `monetaryIncome`（收益日期、基金代码、万份收益、计息本金等原始记录）。查询按当前用户和账单 ID 校验归属；详情的账单日期和实际记录时间分别展示，不以零点账单日期冒充真实到账时间。
 
+会改变已处理货币基金计息日期本金的历史资金流水创建、修改、删除及关联现金撤销目前保守拒绝，错误信息提示保留历史记录；不会自动重算已入账收益。账户级联删除预览和单账户清账还会检查保留账户的相关流水。完整清除账户自身账务时暂停收益绑定并保留已处理日期防重身份。
+
 
 ## 查询与最小示例
 
-只在独立 QA 账本调试：先打开测试版并执行 `adb forward tcp:18862 tcp:18762`，使用 QA WebView 调试上下文中的合法测试会话。以下环境变量仅是调用示例，不是应用新增配置；不要把令牌写入文档或版本库。正式版不提供外部自动登录接口，不能把示例指向正式账本。结束后执行 `adb forward --remove tcp:18862`。
+只在独立 QA 账本调试：先打开测试版并执行 `adb -s <测试机序列号> forward tcp:18862 tcp:18762`，使用 QA WebView 调试上下文中的合法测试会话。以下环境变量仅是调用示例，不是应用新增配置；不要把令牌写入文档或版本库。正式版不提供外部自动登录接口，不能把示例指向正式账本。结束后执行 `adb -s <测试机序列号> forward --remove tcp:18862`。
 
 ```powershell
 $ledgerBase = 'http://127.0.0.1:18862/api/v1'
@@ -242,14 +252,16 @@ Invoke-RestMethod "$ledgerBase/monetary-income/search?q=000198" -Headers $ledger
 
 | 操作 | 关键输入与约束 |
 |---|---|
-| 余额校准 | `accountId`、`balance`、`expectedBalance`、`bookId`、`countInStatistics`、`timeZone`、`requestId`；余额已变化则拒绝 |
+| 余额校准 | `accountId`、`balance`、`expectedBalance`、`bookId`、`countInStatistics`、`timeZone`、`requestId`；计入收支时可选 `categoryId`、`comment` 和 `tagIds`，分类须与差额方向及账本匹配，标签须有效；余额已变化则拒绝 |
 | 报销到账 | `expenseId`、到账 `accountId`、`amount`、`time`、`timeZone`、`comment`、`requestId`；同币种且不超过待报额 |
 | 报销状态 | `expenseId`、`action`：`end` / `reopen` / `unassign`；已有到账时取消受关联约束 |
 | 分期 | `id`/`version`（更新）、`accountId`、`expenseId` 或 `statementMonth`、`principal`、`totalFee`、`periods`、`firstDate`、`method`、`remainder`、`bookId`、`timeZone`、`requestId`；先调 `preview` 再 `save` |
 | 结束分期 | `id`、`version`；保留已经发生的费用，不把本金重新入账 |
-| 定存 | `FixedDeposit` JSON：账户/账本/分类、币种、本金、年利率、期限/单位、开始日期和时区；到期/预计收益由服务校验，`close` 接收 `id` |
+| 定存 | `FixedDeposit` JSON：账户/账本/分类、币种、本金、年利率、期限/单位、开始日期和时区；到期/预计收益由服务校验，`close` 接收 `id`。新增、修改或终止若改变已处理货币基金收益日期的定存本金则拒绝，已入账收益不自动重算。关联的到期事项须通过定存记录管理；单账户清账在有未结算定存时拒绝，全部账务清除会同事务关闭定存并移除对应到期事项。 |
 | 资产偏好 | `revision`、`rules`、`reminders`；规则仅影响隐藏/生效账本，不能覆盖余额 |
 | 账户删除 | `id`、`kind`（`cash`/`portfolio`）；先调用 `/wealth/accounts/delete/preview`，确认影响范围后带返回的 `token` 和 `deleteRelated` 提交 `/delete`；令牌过期须重做预览 |
+
+信用卡报告的每期 `remaining` 是已入账的待还，`futureFees` 是该期尚未入账的计划费用，`projectedRemaining` 是考虑信用卡溢缴后的预计待还。预计额不改变账户余额或生成交易；溢缴优先抵较早的计划费用，实际费用仍由分期同步按约定日期记账。
 
 精确类型定义位于 `pkg/services/asset_adjustment.go`、`reimbursements.go`、`debt_movements.go`、`credit_installments.go`、`account_deletion.go` 和 `pkg/models/asset_tools.go`。日期、ID 和金额均由服务复核，不信任前端预览结果。
 
@@ -264,7 +276,7 @@ Invoke-RestMethod "$ledgerBase/monetary-income/search?q=000198" -Headers $ledger
 
 手动报价 `POST /investments/quotes/manual` 接收 `{instrumentId, price, currency, asOf}`。`price` 为大于零的十进制字符串，`asOf` 为源报价时间；`currency` 为 `CNY` 或 `USD`，省略/空串按 `CNY` 兼容旧客户端，`USD` 仅用于加密资产。私人报价保存原币价格，当前估值读取最新缓存的美元/人民币汇率，保留实际日期、来源和过期状态；缺汇率时仍可保存美元报价，但人民币金额未知。历史快照继续保存当时价格和汇率，历史事实修订后的重建不使用当前汇率。`{instrumentId, automatic:true}` 删除手动覆盖，恢复已有自动来源；没有自动来源时保持未知。
 
-`books/move` 移动流水归属，最多 1000 笔，转账双边同步且不改余额；投资结算不通过普通批量移动修改。归档账本只供查询，成本回放始终包含全部有效历史。
+`books/create` 可选布尔字段 `showTransfers`、`showInvestments` 分别设置首页和日历的转账、投资结算流水显示；旧客户端省略时沿用 `true`，当前手机新建表单默认传 `false`。可选 `hideExistingCategories=true` 在创建事务中隐藏当时已有的收支一级分类，不重写分类原有 `bookIds`，以后新建的分类不被自动隐藏。`books/list` 返回 `hiddenCategoryIds` 和 `categoryScopeRevision`；`POST /books/category-visibility` 接收 `{bookId,revision,changes:[{categoryId,hidden}]}`，每次最多 1000 项，校验用户归属并比较修订号后原子保存，父子分类独立。旧账本默认没有额外隐藏。以上设置不改变余额、统计和历史账单。`books/move` 移动流水归属，最多选择 1000 笔，转账双边、已选原支出的有效退款和报销到账流水在同一事务移动且不改余额；退款或报销到账不能脱离原支出单独移动，服务端检查隐含流水和相关账户的编辑权限。超额退款独立选择的账本保持原设置。单笔编辑已有到账的报销原支出或到账流水时不能单独改变账本。`POST /books/move-all` 接收 `{sourceBookId,targetBookId}`，返回 `movedTransactions`，在同一事务内读取并移动来源账本的普通流水、关联记录及同账本有效投资事件，若存在跨账本关联的投资记录或流水则整体拒绝。`books/modify` 的可选 `hidden` 为独立显示状态，省略时不改；隐藏不影响写入和账本范围，旧数据默认显示。归档账本只供查询，成本回放始终包含全部有效历史。
 
 
 ## 错误处理
@@ -299,5 +311,15 @@ Invoke-RestMethod "$ledgerBase/monetary-income/search?q=000198" -Headers $ledger
 `GET /statistics/auxiliary` 返回 `debtActions`（本金流水 ID 到借还动作的映射）与 `feeIds`（债务利息、分期服务费流水 ID），供客户端按当前日期和筛选范围计算辅助汇总。此接口不创建账务。
 
 普通 `transactions/add.json`、`transactions/modify.json` 支持 `discountAmount`：最多 13 位整数和 2 位小数的非负原币字符串，默认零；修改时省略则保留原值。实收付金额沿用原接口的整数分。优惠仅允许正数普通收入/支出，不能附在转账、退款、投资结算或报销到账上；它不会再次修改余额。
+
+普通交易的 `excludeFromStatistics` 和 `excludeFromBudget` 分别控制收支统计和预算支出；响应返回有效布尔值。新增时省略预算字段，预算排除状态继承收支设置以兼容旧客户端；修改时省略保留已有预算设置。旧数据库和旧备份中的交易继承原收支标记，显式修改后独立保存。报销、投资结算等特殊交易仍遵守各自约束。属性不改变账户余额。
+
+## 关联退款与独立退款
+
+`GET /api/v1/refunds?expenseId=...` 返回原额、累计退款、净支出、超额收入及退款明细（`RefundProjection`）。`POST /refunds/create` 接收 `expenseId`、`accountId`、十进制字符串 `amount`、Unix 秒 `time`、`timeZone`、`installmentMode`（`offset`/`reduce`）、超额分配字段及 `requestId`；`POST /refunds/update` 接收 `id`、`version` 及变更字段；`POST /refunds/excess` 单独调整超额部分统计属性；`POST /refunds/delete` 接收 `id` 与 `version`。已提交请求身份在删除后仍保留防重。
+
+退款事务通过 `models.Refund` 记录关联，到账账户保留真实正向退款流水，原支出保持不变，统计投影按有效退款重算净支出和超额收入。报销已到账金额保留，待报金额不能低于零，新到账受退款后净额约束。普通交易读取响应的 `refund` 是只读投影，退款流水不能通过普通交易接口单独修改或删除。
+
+信用卡报告将退回该卡的金额分配到原消费账期；退款到账其他账户不减少该卡欠款。`/assets/installments/save` 可对单笔消费显式传入 `allowRefundedExpense: true` 与可选 `allowOtherAccountRefund: true`，同时支持含退款的月账单还款分期及已有消费分期后的退款协同重算（`offset` 冲抵应还 / `reduce` 缩减分期本金）。原账修订后的金额扣除退回原账户的退款，不得低于活动分期本金。
 
 普通标签创建/修改接口支持字符串 `parentId`；`"0"` 为一级标签。父级必须是本人的有效一级标签，存在子标签的标签不能降级；父标签不能在仍有子标签时删除。修改省略 `parentId` 保留原层级。分组与父级关系互相独立。

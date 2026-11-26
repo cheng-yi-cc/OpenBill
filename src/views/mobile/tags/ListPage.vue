@@ -7,7 +7,7 @@
             </f7-nav-right>
         </f7-navbar>
         <main class="management-body">
-            <label v-if="searchOpen" class="management-search"><f7-icon f7="search" /><input v-model="query" type="search" placeholder="搜索标签" aria-label="搜索标签" /><button class="management-action" aria-label="关闭搜索" @click="query = ''; searchOpen = false"><f7-icon f7="xmark" /></button></label>
+            <Transition name="cy-collapse"><div v-if="searchOpen"><div class="cy-collapse-inner"><label class="management-search"><f7-icon f7="search" /><input v-model="query" type="search" placeholder="搜索标签" aria-label="搜索标签" /><button class="management-action" aria-label="关闭搜索" @click="query = ''; searchOpen = false"><f7-icon f7="xmark" /></button></label></div></div></Transition>
             <label v-if="groups.length > 1" class="management-filter">标签分组<select v-model="groupId" aria-label="标签分组"><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label>
             <p v-if="showHidden" class="management-state"><f7-icon f7="eye_slash" size="14" />正在显示隐藏标签<button @click="showHidden = false">收起</button></p>
             <p v-if="error" class="cy-message" role="alert">{{ error }}<button @click="load">重试</button></p>
@@ -123,21 +123,23 @@ function create(parent?: TransactionTag) {
 function edit(tag: TransactionTag) { draft.value = tag.clone(); editError.value = ''; editorOpen.value = true; }
 async function save() {
     if (busy.value || !draft.value.name.trim()) return;
+    const isEdit = !!draft.value.id;
     busy.value = true; editError.value = ''; draft.value.name = draft.value.name.trim();
-    try { await store.saveTag({ tag: draft.value }); groupId.value = draft.value.groupId; query.value = ''; editorOpen.value = false; }
+    try { await store.saveTag({ tag: draft.value }); groupId.value = draft.value.groupId; query.value = ''; editorOpen.value = false; showToast(isEdit ? '标签已保存' : '已新增标签'); }
     catch (cause) { editError.value = errorText(cause); }
     finally { busy.value = false; }
 }
 async function toggleHidden() {
     const tag = selected.value; if (!tag || busy.value) return;
+    const nextHidden = !tag.hidden;
     busy.value = true; error.value = '';
-    try { await store.hideTag({ tag, hidden: !tag.hidden }); }
+    try { await store.hideTag({ tag, hidden: nextHidden }); showToast(nextHidden ? '标签已隐藏' : '标签已恢复显示'); }
     catch (cause) { error.value = errorText(cause); }
     finally { busy.value = false; }
 }
 function confirmDelete() {
     const tag = selected.value; if (!tag || busy.value) return;
-    showConfirm(`确定删除「${tag.name}」？被账单使用或含子标签的标签不能直接删除，可选择隐藏。`, () => { void remove(tag); });
+    showConfirm(`确定删除「${tag.name}」？被账单使用或含子标签的标签不能直接删除，可选择隐藏。`, () => { void remove(tag); }, undefined, { title: '删除标签', confirmText: '删除', destructive: true });
 }
 async function remove(tag: TransactionTag) {
     if (busy.value) return; busy.value = true; error.value = '';
@@ -156,7 +158,7 @@ async function saveOrder(ids: string[]) {
     try {
         const response = await services.moveTransactionTag({ newDisplayOrders: ids.map((id, index) => ({ id, displayOrder: index + 1 })) });
         if (!response.data.success || !response.data.result) throw new Error('标签顺序保存失败，请重试');
-        store.updateTransactionTagListInvalidState(true); await store.loadAllTags({ force: false }); orderOpen.value = false;
+        store.updateTransactionTagListInvalidState(true); await store.loadAllTags({ force: false }); orderOpen.value = false; showToast('标签顺序已保存');
     } catch (cause) { orderError.value = errorText(cause); }
     finally { busy.value = false; }
 }

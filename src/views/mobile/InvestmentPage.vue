@@ -2,31 +2,33 @@
     <f7-page class="cy-main-page cy-mobile-surface cy-assets-page" ptr @ptr:refresh="refresh" @page:afterin="activate" @page:beforeout="deactivate">
         <main class="cy-page-body">
             <p v-if="error" class="cy-message" role="alert">{{ error }} <button @click="refresh()">重试</button></p>
-            <section class="cy-panel cy-hero cy-asset-hero" aria-label="资产总览">
+            <section ref="heroEl" class="cy-panel cy-hero cy-asset-hero" aria-label="资产总览">
                 <button id="cy-asset-menu" class="cy-asset-menu" aria-label="资产更多操作" @click="showMenu = true"><f7-icon f7="ellipsis_vertical" size="20" /></button>
-                <div><p class="cy-muted">净资产（元）<button class="cy-eye" :aria-label="visible ? '隐藏资产金额' : '显示资产金额'" @click="visible = !visible"><f7-icon :f7="visible ? 'eye' : 'eye_slash'" size="18" /></button></p><p class="cy-major">{{ money(presentationTotals.net) }}</p></div>
-                <div class="cy-asset-secondary"><p><span>总资产</span><strong>{{ money(grossAssets) }}</strong></p><p><span>负债</span><strong>{{ money(totalLiabilities) }}</strong></p></div>
+                <div><p class="cy-muted">{{ presentationTotals.missing?'已知净资产':'净资产' }}（元）<button class="cy-eye" :aria-label="visible ? '隐藏资产金额' : '显示资产金额'" @click="toggleAssetAmounts"><f7-icon :f7="visible ? 'eye' : 'eye_slash'" size="18" /></button></p><p class="cy-major">{{ money(presentationTotals.net) }}</p></div>
+                <div class="cy-asset-secondary"><p><span>{{ presentationTotals.missing?'已知总资产':'总资产' }}</span><strong>{{ money(grossAssets) }}</strong></p><p><span>{{ presentationTotals.missing?'已知负债':'负债' }}</span><strong>{{ money(totalLiabilities) }}</strong></p></div>
             </section>
-            <p v-if="presentationTotals.missing" class="cy-message">有 {{ presentationTotals.missing }} 项缺少报价或汇率，净资产暂不可确定；已估值部分净额 {{ money(presentedValuedAssets) }} 元。</p>
+            <p v-if="presentationTotals.missing" class="cy-message" role="status">汇总仅包含已知部分；{{ presentationTotals.missing }} 项估值或成本未知，未计入资产金额。</p>
             <p v-else-if="summary?.stalePrices" class="cy-message">{{ summary.stalePrices }} 项价格已过期，当前使用最近可用估值。</p>
             <nav class="cy-asset-shortcuts" aria-label="资产摘要">
                 <f7-link href="/assets/reimbursements"><strong>报销</strong><span>可报 <b class="cy-income">{{money(reimbursementPending)}}</b></span><span>已报 <b>{{money(reimbursementPaid)}}</b></span></f7-link>
                 <f7-link href="/assets/debts"><strong>债务</strong><span>应付 <b class="cy-expense">{{ money(payable) }}</b></span><span>应收 <b class="cy-income">{{ money(receivable) }}</b></span></f7-link>
-                <f7-link href="/investments/ledger"><strong>理财</strong><span>总额 <b>{{ money(investmentTotal) }}</b></span><span>持有盈亏 <b :class="amountClass(visibleInvestmentPnl)">{{ money(visibleInvestmentPnl) }}</b></span></f7-link>
+                <f7-link href="/investments/ledger"><strong>理财</strong><span>{{ investmentAmount.missing?'已知金额':'总额' }} <b>{{ money(investmentTotal) }}</b></span><span>{{ investmentProfit.missing?'已知盈亏':'持有盈亏' }} <b :class="amountClass(visibleInvestmentPnl)">{{ money(visibleInvestmentPnl) }}</b></span></f7-link>
             </nav>
+            <p v-if="investmentProfit.missing" class="cy-message" role="status">理财收益仅汇总已知部分；{{ investmentProfit.missing }} 项收益未知，未计入持有盈亏。</p>
             <p v-if="loading && !summary" class="cy-empty" role="status">正在加载资产…</p>
             <template v-if="summary">
                 <details v-for="group in groups" :key="group.name" class="cy-panel cy-account-group" open>
-                    <summary><h2>{{ group.name }}</h2><strong :class="amountClass(group.total)">{{ money(group.total) }}</strong><f7-icon f7="chevron_down" size="14" /></summary>
+                    <summary><h2>{{ group.name }}</h2><strong :class="amountClass(group.total)">{{ group.missing?'已知 ':'' }}{{ money(group.total) }}</strong><f7-icon f7="chevron_down" size="14" /></summary>
+                    <p v-if="group.missing" class="cy-muted">{{ group.missing }} 项金额未知，未计入分组汇总。</p>
                     <f7-link v-for="account in group.accounts" :key="`${account.portfolio ? 'portfolio' : 'cash'}:${account.id}`" class="cy-account-row" :href="account.href"
                              aria-haspopup="dialog" @pointerdown="startAccountHold($event, account)" @pointermove="moveAccountHold" @pointerup="cancelAccountHold" @pointercancel="cancelAccountHold" @pointerleave="cancelAccountHold"
                              @contextmenu.prevent="openAccountActions(account)"
                              @keydown.shift.f10.prevent="openAccountActions(account)" @click.capture="guardAccountClick">
                         <span class="cy-row-icon" :style="{ color: account.color }"><img v-if="account.platformIcon" :src="account.platformIcon" alt="" width="30" height="30" /><item-icon v-else :icon-type="account.customIcon ? 'user-custom' : 'account'" :icon-id="account.icon" /></span>
-                        <div class="cy-account-content"><div class="cy-account-line"><span class="cy-row-name">{{ account.name }}</span><span class="cy-row-amount" :class="amountClass(account.balance)">{{ currencyMoney(account.balance, account.currency) }}</span></div>
+                        <div class="cy-account-content"><div class="cy-account-line"><span class="cy-row-name">{{ account.name }}</span><span class="cy-row-amount" :class="amountClass(account.balance)">{{ account.balanceMissing?'已知 ':'' }}{{ currencyMoney(account.balance, account.currency) }}</span></div>
                             <template v-if="account.credit"><div class="cy-credit-track" :aria-label="visible ? `已用额度 ${account.credit.percent}%` : '信用额度已隐藏'"><span :style="{ width: visible ? `${account.credit.percent}%` : '0%' }"></span></div><small>可用：{{ currencyMoney(account.credit.available, account.currency) }}<span class="cy-credit-limit">额度 {{ money(account.credit.limit) }}</span></small></template>
-                            <small v-else-if="account.portfolio">{{ account.subtitle }}<template v-if="account.currency!=='CNY'"> · 折合 ¥{{ money(account.value) }}</template></small>
-                            <small v-else-if="account.currency !== 'CNY'">{{ account.currency }} · 折合 ¥{{ money(account.value) }}</small>
+                            <small v-else-if="account.portfolio">{{ account.subtitle }}<template v-if="account.currency!=='CNY'"> · 折合 {{ currencyMoney(account.value, 'CNY') }}</template></small>
+                            <small v-else-if="account.currency !== 'CNY'">{{ account.currency }} · 折合 {{ currencyMoney(account.value, 'CNY') }}</small>
                             <small v-else-if="account.category === 3">未设置信用额度</small><small v-if="account.excluded">不计入总资产</small>
                         </div>
                     </f7-link>
@@ -44,9 +46,10 @@
 </template>
 <script setup lang="ts">
 import { computed, ref, onUnmounted, watch } from 'vue';
-import {assetAmountsVisible as visible} from '@/lib/asset-visibility.ts';
+import {assetAmountsVisible as visible, assetCurrencyMoney} from '@/lib/asset-visibility.ts';
 import {holdingInBooks} from '@/lib/investment-scope.ts';
-import { walletCurrency, walletValue } from '@/lib/wallet-entry.ts';
+import { walletCurrency, positionValue } from '@/lib/wallet-entry.ts';
+import { summarizeAmounts, combineAmountSummaries, type AmountSummary } from '@/lib/amount-summary.ts';
 import {monetaryIncome,monetaryIncomeRevision,type MonetaryBinding} from '@/lib/monetary-income.ts';
 import {createValuationRefresh} from '@/lib/valuation-refresh.ts';
 import { investments, investmentError } from '@/lib/investments.ts';
@@ -62,15 +65,21 @@ import {assetItems,assetTotals,assetAccountGroup,groupAssetAccountRows} from '@/
 import {reimbursements,type ReimbursementClaim} from '@/lib/reimbursements.ts';
 import {useAssetToolsStore} from '@/stores/assetTools.ts';
 import {useBooksStore} from '@/stores/books.ts';
+import { animateSettle } from '@/lib/motion.ts';
+const heroEl = ref<HTMLElement>();
+function toggleAssetAmounts(): void {
+    visible.value = !visible.value;
+    animateSettle(heroEl.value, { scale: 0.99, duration: 140, opacity: 0.82 });
+}
 const accounts = useAccountsStore();
 const preferences=useAssetToolsStore(),books=useBooksStore();
-const assetMenu=[{tool:'search',name:'搜索账户',icon:'search'},{tool:'reminders',name:'还款提醒',icon:'calendar_badge_plus'},{tool:'books',name:'生效账本',icon:'book'},{tool:'deposits',name:'定期存款',icon:'lock'},{tool:'hidden',name:'资产隐藏',icon:'eye_slash'},{tool:'distribution',name:'资产分布',icon:'chart_pie'},{tool:'more',name:'更多数据',icon:'ellipsis'}];
+const assetMenu=[{tool:'search',name:'搜索账户',icon:'search'},{tool:'reminders',name:'还款提醒',icon:'calendar_badge_plus'},{tool:'books',name:'生效账本',icon:'book'},{tool:'deposits',name:'定期存款',icon:'lock'},{tool:'hidden',name:'管理显示',icon:'eye_slash'},{tool:'distribution',name:'资产分布',icon:'chart_pie'},{tool:'more',name:'还款与可用资金',icon:'ellipsis'}];
 const scopedItems=computed(()=>assetItems(summary.value,investmentAccounts.value,accounts.allAccountsMap,preferences.preferences,books.selectedBookIds).filter(a=>!books.selectedBookIds.length||books.selectedBookIds.some(id=>preferences.available(a.portfolio?'portfolio':'cash',a.id,id))));
 const presentedItems=computed(()=>scopedItems.value.filter(a=>!a.hidden));
 const shownKeys=computed(()=>new Set(presentedItems.value.map(a=>a.key)));
 const presentationTotals=computed(()=>assetTotals(scopedItems.value));
-const presentedValuedAssets=computed(()=>sum(scopedItems.value.filter(a=>a.value!=null&&!a.excluded).map(a=>a.value)));
-const visibleInvestmentPnl=computed(()=>sum(scopedItems.value.filter(a=>a.portfolio&&!a.excluded).map(a=>a.unrealizedPnl)));
+const investmentProfit=computed(()=>combineAmountSummaries(scopedItems.value.filter(a=>a.portfolio&&!a.excluded).map(a=>a.holdingProfit||summarizeAmounts([a.unrealizedPnl]))));
+const visibleInvestmentPnl=computed(()=>summary.value?investmentProfit.value.value:null);
 
 const accountKinds: Record<string,string> = { EXCHANGE: '加密货币交易所', WALLET: '加密钱包', BROKER: '证券账户', OTHER: '其他' };
 const summary = ref<WealthSummary>();
@@ -120,10 +129,11 @@ function reimbursementValue(claim:ReimbursementClaim,value:string):string|null {
 const reimbursementPending=computed(()=>sum(visibleClaims.value.filter(c=>!c.closed).map(c=>reimbursementValue(c,c.pending))));
 const reimbursementPaid=computed(()=>sum(visibleClaims.value.map(c=>reimbursementValue(c,c.paid))));
 const payable = computed(() => debtTotal([5], true)), receivable = computed(() => debtTotal([6], false));
-const investmentTotal = computed(() => summary.value ? sum(scopedItems.value.filter(a=>!a.excluded&&(a.portfolio||monetary.value.some(b=>b.accountId===a.id)||[7,9].includes(a.category)&&a.kind!=='secondhand')).map(a=>a.value)) : null);
+const investmentAmount = computed(() => combineAmountSummaries(scopedItems.value.filter(a=>!a.excluded&&(a.portfolio||monetary.value.some(b=>b.accountId===a.id)||[7,9].includes(a.category)&&a.kind!=='secondhand')).map(a=>a.valuation||summarizeAmounts([a.value]))));
+const investmentTotal = computed(() => summary.value ? investmentAmount.value.value : null);
 interface AccountRow {
     id: string; name: string; currency: string; balance: string | null; value: string | null; icon: string; customIcon: boolean; color: string; category: number; href: string;
-    platformIcon?: string; portfolio?: boolean; subtitle?: string; group?:string; excluded?:boolean; credit?: { available: string; limit: string; percent: number };
+    platformIcon?: string; portfolio?: boolean; subtitle?: string; group?:string; excluded?:boolean; valuation?:AmountSummary; balanceMissing?:number; credit?: { available: string; limit: string; percent: number };
 }
 function cashRow(item: WealthCashAccount): AccountRow {
     const account = accounts.allAccountsMap[item.id];
@@ -140,16 +150,17 @@ function cashRow(item: WealthCashAccount): AccountRow {
 }
 const portfolios = computed<AccountRow[]>(() => investmentAccounts.value.map(account => {
     const positions = summary.value?.positions.filter(position => position.accountId === account.id && new LedgerDecimal(position.quantity).gt(0) && holdingInBooks(position.profile||{accountId:position.accountId,bookIds:[]},preferences.preferences,books.selectedBookIds)) || [];
-    const value = sum(positions.map(position => position.totalValue===undefined?position.marketValue:position.totalValue));
-    return { id: account.id, name: account.name, balance: walletValue(positions,walletCurrency(account),summary.value), value, currency: walletCurrency(account), category: 7, icon: account.kind === 'EXCHANGE' ? '1500' : account.kind === 'WALLET' ? '1' : '801', customIcon: false, color: account.kind === 'EXCHANGE' ? '#bf82ca' : '', portfolio: true, platformIcon: platformIcon(account.platform, account.kind), subtitle: `${accountKinds[account.kind] || '其他'} · ${positions.length} 项持仓`, href: isCryptoAccount(account.kind) ? `/crypto/account?id=${encodeURIComponent(account.id)}` : `/investments/ledger?accountId=${encodeURIComponent(account.id)}` };
+    const valuation = summarizeAmounts(positions.filter(p=>!p.profile?.excludeFromTotal).map(position => position.totalValue===undefined?position.marketValue:position.totalValue));
+    const balance = summarizeAmounts(positions.map(p=>positionValue(p,walletCurrency(account),summary.value)));
+    return { id: account.id, name: account.name, balance: balance.value, balanceMissing:balance.missing, value:valuation.value, valuation, currency: walletCurrency(account), category: 7, icon: account.kind === 'EXCHANGE' ? '1500' : account.kind === 'WALLET' ? '1' : '801', customIcon: false, color: account.kind === 'EXCHANGE' ? '#bf82ca' : '', portfolio: true, platformIcon: platformIcon(account.platform, account.kind), subtitle: `${accountKinds[account.kind] || '其他'} · ${positions.length} 项持仓${balance.missing?` · ${balance.missing} 项估值未知`:''}`, href: isCryptoAccount(account.kind) ? `/crypto/account?id=${encodeURIComponent(account.id)}` : `/investments/ledger?accountId=${encodeURIComponent(account.id)}` };
 }));
 const groups = computed(() => {
     const rows=(summary.value?.cashAccounts||[]).filter(a=>shownKeys.value.has('cash:'+a.id)&&![5,6].includes(accounts.allAccountsMap[a.id]?.category||0)).map(cashRow);
     rows.push(...portfolios.value.filter(a=>shownKeys.value.has('portfolio:'+a.id)).map(a=>({...a,group:'投资理财'})));
-    return groupAssetAccountRows(rows).map(group=>({...group,total:sum(group.accounts.map(a=>a.value))}));
+    return groupAssetAccountRows(rows).map(group=>{const total=combineAmountSummaries(group.accounts.map(a=>a.valuation||summarizeAmounts([a.value])));return {...group,total:total.value,missing:total.missing};});
 });
 function money(value: string | null | undefined): string { return visible.value ? ledgerMoney(value,false) : '••••'; }
-function currencyMoney(value: string | null, currency: string): string { return `${({ CNY:'¥',USD:'$',EUR:'€',HKD:'HK$',JPY:'JP¥' } as Record<string,string>)[currency] || currency + ' '}${money(value)}`; }
+function currencyMoney(value: string | null | undefined, currency: string): string { return assetCurrencyMoney(value, currency); }
 function amountClass(value: string | null | undefined): string { return value != null && new LedgerDecimal(value).lt(0) ? 'cy-expense' : 'cy-income'; }
 async function refresh(done?: () => void): Promise<void> {
     const version = ++requestNumber; loading.value = true; error.value = '';
@@ -172,4 +183,5 @@ onUnmounted(deactivate);
 .cy-account-group summary{display:flex;gap:10px;align-items:center;cursor:pointer;list-style:none;min-height:26px}.cy-account-group summary::-webkit-details-marker{display:none}.cy-account-group summary h2{flex:1}.cy-account-group summary strong{color:var(--cy-accent);font-size:16px;max-width:45%;overflow-wrap:anywhere}.cy-account-group summary strong.cy-expense{color:var(--cy-expense)}.cy-account-group[open] summary{margin-bottom:5px}.cy-account-group:not([open]) summary .icon{transform:rotate(-90deg)}.cy-account-group .cy-row-icon{background:transparent;border-radius:0;flex-basis:26px}.cy-row-icon :deep(i){font-size:28px!important;color:inherit!important}.cy-account-content{flex:1;min-width:0}.cy-account-line{display:flex;align-items:baseline;gap:8px}.cy-account-row{width:100%;box-sizing:border-box}.cy-account-row .cy-row-name{font-size:16px}.cy-credit-track{height:4px;border-radius:8px;overflow:hidden;background:var(--cy-line);margin:10px 0 6px}.cy-credit-track span{display:block;height:100%;background:var(--cy-accent)}.cy-credit-limit{float:right}.cy-filter-note{display:flex;justify-content:space-between;align-items:center;margin:0 0 15px;font-size:12px;color:var(--cy-muted)}.cy-filter-note button{background:none;border:0;color:var(--cy-accent)}
 .cy-account-picker{--f7-sheet-bg-color:var(--cy-card);height:auto;max-height:85dvh;background:var(--cy-card);color:var(--cy-ink);border-radius:22px 22px 0 0;box-shadow:none!important;backdrop-filter:none!important}.cy-account-picker :deep(.sheet-modal-inner){padding-top:0;max-height:85dvh;box-sizing:border-box;overflow:auto}.cy-picker-heading{display:flex;justify-content:space-between;align-items:center;padding:17px 18px 12px;position:sticky;top:0;background:var(--cy-card);z-index:1;border-bottom:1px solid var(--cy-line)}.cy-picker-heading a{color:var(--cy-accent);font-size:14px;padding:4px}.cy-account-presets{padding:16px 16px calc(24px + env(safe-area-inset-bottom))}.cy-account-presets section+section{margin-top:23px}.cy-account-presets h2{font-size:17px;margin-bottom:17px}.cy-preset-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:17px 5px}.cy-preset-grid a{display:flex;flex-direction:column;gap:7px;text-align:center;color:inherit;white-space:normal;font-size:12px;line-height:1.35}.cy-preset-grid a>span:first-child{height:30px;display:grid;place-items:center}.cy-preset-grid :deep(i){font-size:30px!important;color:inherit!important}
 .cy-assets-page .cy-asset-hero{background:var(--cy-bg);color:var(--cy-ink);padding:22px 16px 20px;min-height:112px;margin-bottom:10px}.cy-assets-page .cy-asset-hero:before{display:none}.cy-assets-page .cy-asset-hero .cy-muted,.cy-asset-secondary span{color:var(--cy-muted)}.cy-eye,.cy-asset-menu{color:var(--cy-muted)}.cy-assets-page .cy-asset-shortcuts{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:14px}.cy-asset-shortcuts button,.cy-asset-shortcuts a{border:0;border-radius:11px;padding:12px 5px;gap:3px;font-size:11px;align-items:flex-start;padding-left:12px}.cy-asset-shortcuts strong{font-size:15px;font-weight:500;margin-bottom:4px}.cy-assets-page .cy-account-group{border:0;border-radius:12px;padding:12px 14px;margin-bottom:13px}.cy-account-group summary h2{font-size:14px;font-weight:400;color:var(--cy-muted)}.cy-account-group summary strong{font-size:14px;font-weight:400}.cy-assets-page .cy-account-row{border:0;padding:13px 0;min-height:55px}.cy-assets-page .cy-account-row:last-child{padding-bottom:6px}.cy-account-row .cy-row-name{font-size:15px}.cy-account-row .cy-row-amount{font-weight:400}.cy-row-icon :deep(i){font-size:25px!important}.cy-picker-grip{height:4px;width:34px;border-radius:3px;background:var(--cy-line);margin:9px auto}.cy-account-presets{padding-top:7px}.cy-account-presets h2{font-size:14px;font-weight:400}.cy-account-presets section+section{margin-top:20px}
+.cy-assets-page .cy-asset-hero{background:var(--cy-soft)}.cy-asset-hero .cy-major{color:var(--cy-accent)}
 </style>

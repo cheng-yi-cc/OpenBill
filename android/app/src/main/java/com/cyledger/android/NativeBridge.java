@@ -12,6 +12,7 @@ final class NativeBridge {
     static native void directNetwork(long handle, String dnsServers);
     static native String backup(String directory,String destination,String settings);
     static native String stageRestore(String archive,String parent);
+    static native String checkDca(boolean sync);
 
     private NativeBridge() {}
 }

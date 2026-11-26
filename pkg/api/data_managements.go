@@ -169,7 +169,7 @@ func (a *DataManagementsApi) ClearAllDataHandler(c *core.WebContext) (any, *errs
 		return nil, errs.ErrUserNotFound
 	}
 
-	if !a.users.IsPasswordEqualsUserPassword(clearDataReq.Password, user) {
+	if !a.verifyClearPassword(clearDataReq.Password, user) {
 		return nil, errs.ErrUserPasswordWrong
 	}
 
@@ -177,66 +177,10 @@ func (a *DataManagementsApi) ClearAllDataHandler(c *core.WebContext) (any, *errs
 		return nil, errs.ErrNotPermittedToPerformThisAction
 	}
 
-	err = a.templates.DeleteAllTemplates(c, uid)
+	err = a.transactions.ClearAllUserData(c, uid)
 
 	if err != nil {
-		log.Errorf(c, "[data_managements.ClearAllDataHandler] failed to delete all transaction templates, because %s", err.Error())
-		return nil, errs.Or(err, errs.ErrOperationFailed)
-	}
-
-	err = a.transactions.DeleteAllTransactions(c, uid, true)
-
-	if err != nil {
-		log.Errorf(c, "[data_managements.ClearAllDataHandler] failed to delete all transactions, because %s", err.Error())
-		return nil, errs.Or(err, errs.ErrOperationFailed)
-	}
-
-	err = a.categories.DeleteAllCategories(c, uid)
-
-	if err != nil {
-		log.Errorf(c, "[data_managements.ClearAllDataHandler] failed to delete all transaction categories, because %s", err.Error())
-		return nil, errs.Or(err, errs.ErrOperationFailed)
-	}
-
-	err = a.tags.DeleteAllTags(c, uid)
-
-	if err != nil {
-		log.Errorf(c, "[data_managements.ClearAllDataHandler] failed to delete all transaction tags, because %s", err.Error())
-		return nil, errs.Or(err, errs.ErrOperationFailed)
-	}
-
-	err = a.tagGroups.DeleteAllTagGroups(c, uid)
-
-	if err != nil {
-		log.Errorf(c, "[data_managements.ClearAllDataHandler] failed to delete all transaction tag groups, because %s", err.Error())
-		return nil, errs.Or(err, errs.ErrOperationFailed)
-	}
-
-	err = a.userCustomIcons.DeleteAllCustomIcons(c, uid)
-
-	if err != nil {
-		log.Errorf(c, "[data_managements.ClearAllDataHandler] failed to delete all user custom icons, because %s", err.Error())
-		return nil, errs.Or(err, errs.ErrOperationFailed)
-	}
-
-	err = a.userCustomExchangeRates.DeleteAllCustomExchangeRates(c, uid)
-
-	if err != nil {
-		log.Errorf(c, "[data_managements.ClearAllDataHandler] failed to delete all user custom exchange rates, because %s", err.Error())
-		return nil, errs.Or(err, errs.ErrOperationFailed)
-	}
-
-	err = a.insightsExploreres.DeleteAllExplorations(c, uid)
-
-	if err != nil {
-		log.Errorf(c, "[data_managements.ClearAllDataHandler] failed to delete all explorations, because %s", err.Error())
-		return nil, errs.Or(err, errs.ErrOperationFailed)
-	}
-
-	if _, err = services.LedgerWorkspace.UserDataDB(uid).NewSession(c).Where("uid=?", uid).Delete(&models.LocalLedgerItem{}); err != nil {
-		return nil, errs.Or(err, errs.ErrOperationFailed)
-	}
-	if err = services.Calendar.DeleteAll(c, uid); err != nil {
+		log.Errorf(c, "[data_managements.ClearAllDataHandler] failed to clear user data, because %s", err.Error())
 		return nil, errs.Or(err, errs.ErrOperationFailed)
 	}
 	log.Infof(c, "[data_managements.ClearAllDataHandler] user \"uid:%d\" has cleared all data", uid)
@@ -264,7 +208,7 @@ func (a *DataManagementsApi) ClearAllTransactionsHandler(c *core.WebContext) (an
 		return nil, errs.ErrUserNotFound
 	}
 
-	if !a.users.IsPasswordEqualsUserPassword(clearDataReq.Password, user) {
+	if !a.verifyClearPassword(clearDataReq.Password, user) {
 		return nil, errs.ErrUserPasswordWrong
 	}
 
@@ -304,7 +248,7 @@ func (a *DataManagementsApi) ClearAllTransactionsByAccountHandler(c *core.WebCon
 		return nil, errs.ErrUserNotFound
 	}
 
-	if !a.users.IsPasswordEqualsUserPassword(clearDataReq.Password, user) {
+	if !a.verifyClearPassword(clearDataReq.Password, user) {
 		return nil, errs.ErrUserPasswordWrong
 	}
 
@@ -336,6 +280,14 @@ func (a *DataManagementsApi) ClearAllTransactionsByAccountHandler(c *core.WebCon
 
 	log.Infof(c, "[data_managements.ClearAllTransactionsByAccountHandler] user \"uid:%d\" has cleared all transactions in account \"id:%d\"", uid, account.AccountId)
 	return true, nil
+}
+
+// verifyClearPassword allows empty-password confirmation only for passwordless local accounts.
+func (a *DataManagementsApi) verifyClearPassword(password string, user *models.User) bool {
+	if user != nil && user.Password == "" {
+		return password == ""
+	}
+	return a.users.IsPasswordEqualsUserPassword(password, user)
 }
 
 func (a *DataManagementsApi) getExportedFileContent(c *core.WebContext, fileType string) ([]byte, string, *errs.Error) {

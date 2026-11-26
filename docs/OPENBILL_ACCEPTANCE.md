@@ -1,41 +1,28 @@
 # OpenBill 验收与交接
 
-状态日期：2026-10-07。本次交付为 OpenBill 改名、品牌图标、Android 原生开屏与仅保留 Android 的范围调整。账务算法和正式账本不在本次修改范围内。
+状态日期：2026-11-26。本轮已完成全部界面对齐、10 月 8 日四项功能融合（25 个加密平台图标与搜索、初始成本换算与首次定投、部分未知持仓保留已知小计、账单详情居中日期滚轮与逐项直编/关联账单）、全项目细腻动效升级，以及本机测试机与主力机的同签名升级验收。
 
-## 已实现
+## 当前现役功能状态
 
-- 应用显示名、导出文件名、通知与解锁提示、关于页仓库链接和文档改为 OpenBill。GitHub 仓库已改名为 `cheng-yi-cc/OpenBill`，本地 origin 已同步。
-- 深墨绿、暖白与浅绿的“打开的账本 + O”图标，提供 Android 自适应图标、主题图标和 SVG。原生开屏展开账页并画出 O，最长 850 毫秒；动画与后端启动并行，页面就绪后淡出，没有强制停留计时。系统关闭动画时使用静态图形；页面失败可重试。
-- 删除独立电脑界面、桌面路由/布局/样式、电脑启动/备份工具、独立桌面后端入口、Docker 账本部署、桌面发布流程及依赖独立服务器的上游 API 工具；移除未使用的桌面代码编辑器、路由与 PWA 构建依赖。保留 Android 所需的 Go / Vue 共用实现，以及可选的公开行情中转服务。
-- 日历时钟在应用恢复前台和同步时重新取得系统时区；显式设置的会计时区始终优先。修复时钟测试缺少设置模块隔离的问题。
-- 包名 `com.cyledger.android`、签名、数据库路径、原生桥与 `cyledger-mobile-backup-v1` 格式身份保持兼容；新备份文件以 OpenBill 命名，旧 CYLedger 文件名仍被接受。
+- **日常记账与详情直编**：支持快速四则键盘、分类/子分类、两级标签、优惠与实付反算、手续费/转账优惠同事务联动、居中日期与时间滚轮弹窗、详情页字段单项直编、双向手动关联账单、独立 `Refund` 模型退款及超额/分期联动，以及分类/标签/账户统计下钻。
+- **多账本与资产管理**：支持独立创建/编辑/归档/隐藏账本与分类显示范围、整本事务级迁移（含关联退款、报销及同账本投资事件）、资金/信贷/预付/保险/二手/报销/债务/定存全链路管理，以及信用卡分期（含退款月账单与 `offset`/`reduce` 协同）。
+- **投资与加密货币**：覆盖 25 个加密交易所/钱包品牌图标与搜索、初始总成本↔均价换算与同事务首次定投、基于 `DcaScheduler`/`DcaNotifier` 的定时提醒与补记、基金确认/定投、货币基金逐日收益防重、钱包多币种收支（含标签/附件/优惠/地点名称）与部分未知持仓保留“已知”小计展示。
+- **统计与预算**：支持日常/月/年/自定义周期、一级标签含子级按账单去重、由账务事实实时重算的分类与总预算（携带乐观锁修订校验）、年度热力图、月年总结及真实历史时间轴资产走势。
+- **动效体系与无障碍**：通过 `src/lib/motion.ts`、`src/styles/mobile/_motion.scss` 及原生 `OpenBillSplash`/`MainActivity`/`PatternView` 统一交互曲线、等宽数字、页面与弹窗过渡、列表 FLIP 重排及错误轻量反馈；完整遵循系统 `prefers-reduced-motion` 与应用内动画开关。
 
-## 已验证
+## 现役验证范围
 
-| 项目 | 结果 |
-|---|---|
-| 前端 | Vue 类型检查、生产构建通过；手机首页布局既有 4 项测试、日历跨月/系统时区变化/显式时区优先 3 项测试通过；构建中没有 desktop.html 或 desktop 资源 |
-| Go / SQLite | `go test ./cmd ./android/backend ./pkg/localbackup` 通过；cmd 为编译检查 |
-| 远端前端检查 | 提交 `5a8e5a45` 的 Vue 类型检查、全量 Vitest、生产构建及仅 Android 资源检查通过；[CI 记录](https://github.com/cheng-yi-cc/OpenBill/actions/runs/37639788746) |
-| 远端行情检查 | GitHub Actions 的行情竞态回归、Java 编译及 Android ARM64 / JNI 编译通过 |
-| Android 构建 | ARM64 共享库、JNI、Java、资源、D8、APK v2/v3 签名及 16 KiB 对齐检查通过 |
-| 真机启动 | 型号 23113RKC6C、Android 16；测试版冷启动动画进入首页，关闭系统动画后仍能进入，原系统设置已还原 |
-| 本机路由 | 前台 QA 后端 `/healthz.json` 返回 200，已移除的 `/desktop` 返回 404；检查后移除临时端口转发 |
-| 手机备份 | 独立空白 QA 账本创建 OpenBill 完整备份，将该测试副本改为旧 CYLedger 文件名后由系统文件选择器恢复，产生恢复前目录并重新进入首页；未使用正式备份 |
-| 正式升级 | 已使用 `adb install --no-incremental -r` 覆盖升级并启动；版本 0.3.0 / versionCode 4，首次安装时间仍为 2026-10-01 11:59:53；没有卸载或清除正式数据 |
+- **前端与类型检查**：`node node_modules/vue-tsc/bin/vue-tsc.js --noEmit`、全量 Vitest 及 `npm run build`（仅输出 Android 资产 `dist/mobile.html`，无 `dist/desktop.html`）。
+- **Go 与集成检查**：`go test -count=1 ./cmd ./pkg/services ./pkg/api ./pkg/localbackup ./pkg/marketquotes ./pkg/marketrelay ./android/backend`、`python scripts/test_market_network_config.py`，及 Java 8 语法兼容编译检查。
+- **无头浏览器与真机验效**：Playwright 覆盖 `320×640` / `390×844` / `1280×800` × 浅色/深色与降低动态效果验证（0 错误、0 横向溢出）；测试机已完成 QA `dumpsys gfxinfo` 帧率验证及完整备份/恢复验证；主力机（Redmi K70，Android 16）已完成同签名 `install --user 0 --no-incremental -r` 就地覆盖更新与只读启动核验，`firstInstallTime` 与数据目录 inode 保持不变。
 
-## 交付与预览
+## 交付产物与边界
 
-正式包：`dist/android/OpenBill-Android-arm64.apk`，63854887 字节，对应品牌改版提交 `3d161479`。日历时区补充修复已提交源码，按用户确认的并行任务安排，随收益修复任务统一构建并覆盖升级；此处旧包校验值不代表后续统一包。
+- **正式安装包**：`dist/android/OpenBill-Android-arm64.apk`（`com.cyledger.android`，`versionCode=4`，`versionName=0.3.0`，`64,231,814` 字节，SHA-256 `5a5cd500db2aafd055cdcbce631ef537b9802945e41e151833beb3ab10816716`）。
+- **签名与持久化材料**：证书指纹 `19d9a950a1d3608d8098f6ea8ebe47b464126d537946470eb7a369007ad1add3`（密钥位于 `.runtime/android-signing/`，长期保留且不入库）。
+- **范围之外与外部依赖**：暂不开发自动记账、桌面小组件与云同步；钱包收支暂不支持报销、地图坐标与跨币草稿自动换算。公开行情/汇率依赖网络及供应商，可选行情中转须自行部署并透过 `--market-network` 配置。界面依赖现代 Android System WebView（已验证 WebView 155+，WebView 83 等过旧版本不兼容）。
 
-SHA-256：`5d5565cedaa8da0f5cea65b1c08ed86f7382f5371dbc00aa5f238c27c934afb5`。
+## 预览与构建
 
-签名证书 SHA-256：`19d9a950a1d3608d8098f6ea8ebe47b464126d537946470eb7a369007ad1add3`。
-
-手机打开 **OpenBill** 即可使用；关闭后重新打开查看开屏。开发预览使用 `python scripts/build_android.py --qa`，安装 `dist/android/OpenBill-Android-arm64-qa.apk` 后打开 **OpenBill 测试**。正式和 QA 私有账本隔离；签名材料必须长期保留。
-
-源码已合并至 `main` 并同步到 `cheng-yi-cc/OpenBill`；开发分支已删除，独立工作树的 Git 登记和全部内容已清理；原工作树只剩被本次聊天进程占用的空目录，退出占用后可删除。正式 APK 保存在主目录 `D:/My Project/CY Finance Manager/dist/android/OpenBill-Android-arm64.apk`。本次构建缓存、截图、视频、测试备份副本及 QA 应用已清理，正式账本、原有备份和主目录 `.runtime/android-signing/` 签名材料保留。
-
-## 未验证与外部依赖
-
-最低声明 Android 8.0，本次只做 Android 16 真机验收；其他系统版本和厂商启动窗口尚未实测。未重新执行全部历史账务验收，也未验证真实网络切换矩阵。公开行情仍依赖网络与供应商，可选中转仍需自行配置；本次品牌和平台调整无需新增外部服务。
+- **主力机 / 正式版**：直接打开手机 **OpenBill**（同签名更新使用 `adb -s <设备序列号> install --user 0 --no-incremental -r dist/android/OpenBill-Android-arm64.apk`，严禁卸载或清数据）。
+- **构建与测试预览**：在项目根目录执行 `python scripts/build_android.py` 构建正式包，或加 `--qa` 构建独立测试包 **OpenBill 测试**（`com.cyledger.android.qa`，数据完全隔离）。

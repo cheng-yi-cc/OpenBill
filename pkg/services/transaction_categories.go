@@ -388,6 +388,13 @@ func (s *TransactionCategoryService) DeleteCategory(c core.Context, uid int64, c
 		for i := 0; i < len(categoryAndSubCategories); i++ {
 			categoryAndSubCategoryIds[i] = categoryAndSubCategories[i].CategoryId
 		}
+		refundCategoryUsed, err := sess.Where("uid=? AND deleted=?", uid, false).In("excess_category_id", categoryAndSubCategoryIds).Exist(&models.Refund{})
+		if err != nil {
+			return err
+		}
+		if refundCategoryUsed {
+			return errs.ErrTransactionCategoryInUseCannotBeDeleted
+		}
 
 		exists, err := sess.Cols("uid", "deleted", "category_id").Where("uid=? AND deleted=?", uid, false).In("category_id", categoryAndSubCategoryIds).Limit(1).Exist(&models.Transaction{})
 
@@ -431,6 +438,13 @@ func (s *TransactionCategoryService) DeleteAllCategories(c core.Context, uid int
 	}
 
 	return s.UserDataDB(uid).DoTransaction(c, func(sess *xorm.Session) error {
+		refundCategoryUsed, err := sess.Where("uid=? AND deleted=? AND excess_category_id>0", uid, false).Exist(&models.Refund{})
+		if err != nil {
+			return err
+		}
+		if refundCategoryUsed {
+			return errs.ErrTransactionCategoryInUseCannotBeDeleted
+		}
 		exists, err := sess.Cols("uid", "deleted", "category_id").Where("uid=? AND deleted=? AND category_id<>?", uid, false, 0).Limit(1).Exist(&models.Transaction{})
 
 		if err != nil {

@@ -172,12 +172,13 @@ export function setTransactionModelByTransaction(transaction: Transaction, trans
 
     if (transaction2) {
         if (setContextData) {
-            transaction.createdAt=transaction2.createdAt;transaction.scheduledCreated=transaction2.scheduledCreated;transaction.monetaryIncome=transaction2.monetaryIncome;transaction.wallet=transaction2.wallet;transaction.investmentEventId=transaction2.investmentEventId;transaction.editable=transaction2.editable;
+            transaction.createdAt=transaction2.createdAt;transaction.scheduledCreated=transaction2.scheduledCreated;transaction.monetaryIncome=transaction2.monetaryIncome;transaction.wallet=transaction2.wallet;transaction.refund=transaction2.refund;transaction.investmentEventId=transaction2.investmentEventId;transaction.editable=transaction2.editable;
         }
         transaction.bookId = transaction2.bookId || transaction.bookId;
-        transaction.locationName=transaction2.locationName;transaction.debtDueDate=transaction2.debtDueDate;transaction.transferFeeAmount=transaction2.transferFeeAmount;transaction.transferFeeCategoryId=transaction2.transferFeeCategoryId;transaction.transferFeeParentId=setContextData?transaction2.transferFeeParentId:'0';
+        transaction.locationName=transaction2.locationName;transaction.locationAddress=transaction2.locationAddress||'';transaction.linkedTransactionIds=setContextData?[...(transaction2.linkedTransactionIds||[])]:[];transaction.debtDueDate=transaction2.debtDueDate;transaction.transferFeeAmount=transaction2.transferFeeAmount;transaction.transferFeeCategoryId=transaction2.transferFeeCategoryId;transaction.transferFeeParentId=setContextData?transaction2.transferFeeParentId:'0';
         transaction.discountAmount = transaction2.discountAmount || '0';
         transaction.excludeFromStatistics = transaction2.excludeFromStatistics;
+        transaction.excludeFromBudget = transaction2.excludeFromBudget;
         transaction.reimbursementAccountId = transaction2.reimbursementAccountId;
         transaction.reimbursementReceiptId = setContextData ? transaction2.reimbursementReceiptId : '';
         transaction.reimbursementClosedAt = setContextData ? transaction2.reimbursementClosedAt : 0;

@@ -8,8 +8,8 @@
         <label class="cy-debt-field">资金账户<select v-model="cashId" :disabled="disabled" aria-label="债务资金账户"><option value="">选择账户</option><option v-for="account in cashAccounts" :key="account.id" :value="account.id">{{ account.name }} · {{ account.currency }}</option></select></label>
         <f7-link class="cy-debt-add" :class="{ disabled }" href="/account/add">＋ 添加资金账户</f7-link>
         <div v-if="counterparty" class="cy-debt-outstanding">
-            <span>{{ isBorrowing ? '剩余欠款' : '剩余应收' }}<strong>{{ money(outstanding) }} <small>{{ counterparty.currency }}</small></strong></span>
-            <span>本次记账后<strong>{{ money(projected) }} <small>{{ counterparty.currency }}</small></strong></span>
+            <span>{{ isBorrowing ? '剩余欠款' : '剩余应收' }}<strong>{{ ledgerCurrencyMoney(money(outstanding), counterparty.currency) }}</strong></span>
+            <span>本次记账后<strong>{{ ledgerCurrencyMoney(money(projected), counterparty.currency) }}</strong></span>
         </div>
         <f7-link class="cy-debt-history" v-if="counterparty" :href="`/transaction/list?accountIds=${counterparty.id}`">查看往来记录</f7-link>
     </section>
@@ -25,6 +25,7 @@ import { useAccountsStore } from '@/stores/account.ts';
 import { getCurrentUnixTime } from '@/lib/datetime.ts';
 import { generateRandomUUID } from '@/lib/misc.ts';
 import { investmentError } from '@/lib/investments.ts';
+import { ledgerCurrencyMoney } from '@/lib/ledger-display.ts';
 import { DEBT_OPERATIONS, debtAccountCategory, debtIsSource, debtPrincipal, isDebtCashAccount, projectedDebtPrincipal, type DebtOperation } from '@/lib/ledger-debt.ts';
 
 const props = defineProps<{ accounts: Account[]; categories: Pick<TransactionCategory, 'id' | 'name' | 'subCategories'>[]; amount: number; disabled: boolean; previousAccountId?: string; previousImpact?: string }>();
@@ -45,7 +46,7 @@ function money(cents: string): string { return new Decimal(cents).div(100).toFix
 function normalizeAccounts(previousOperation: DebtOperation): void {
     const oldParty = debtIsSource(previousOperation) ? sourceId.value : destinationId.value;
     const oldCash = debtIsSource(previousOperation) ? destinationId.value : sourceId.value;
-    const party = counterparties.value.some(account => account.id === oldParty) ? oldParty : '';
+    const party = counterparties.value.some(account => account.id === oldParty) ? oldParty : (counterparties.value.length === 1 ? counterparties.value[0]!.id : '');
     const cash = props.accounts.find(account => account.id === oldCash && isDebtCashAccount(account)) || props.accounts.find(account => account.id === oldParty && isDebtCashAccount(account));
     counterpartyId.value = party;
     cashId.value = cash && (!counterparty.value || cash.currency === counterparty.value.currency) ? cash.id : cashAccounts.value[0]?.id || '';
@@ -57,6 +58,7 @@ watch(operation, (value, previous) => {
         categoryId.value = props.categories.flatMap(parent => parent.subCategories || []).find(child => child.name === label)?.id || props.categories[0]?.subCategories?.[0]?.id || '';
     }
 }, { immediate: true });
+watch(counterparties, list => { if (!counterpartyId.value && list.length === 1) counterpartyId.value = list[0]!.id; }, { immediate: true });
 watch(cashAccounts, accounts => { if (!accounts.some(account => account.id === cashId.value)) cashId.value = accounts[0]?.id || ''; });
 async function createCounterparty(): Promise<void> {
     if (busy.value || !name.value.trim()) return;
@@ -64,7 +66,9 @@ async function createCounterparty(): Promise<void> {
     try {
         const currency = props.accounts.find(account => account.id === cashId.value)?.currency || 'CNY';
         const account = Account.createNewAccount(isBorrowing.value ? AccountCategory.DebtAccount : AccountCategory.Receivables, currency, getCurrentUnixTime());
-        account.name = `${isBorrowing.value ? '借入' : '借出'} · ${name.value.trim()}`;
+        const rawName = name.value.trim();
+        const prefix = isBorrowing.value ? '借入' : '借出';
+        account.name = rawName.startsWith('借入') || rawName.startsWith('借出') ? rawName : `${prefix} · ${rawName}`;
         const saved: AccountInfoResponse = await store.saveAccount({ account, subAccounts: [], isEdit: false, clientSessionId: generateRandomUUID() });
         counterpartyId.value = saved.id; name.value = ''; creating.value = false;
     } catch (cause) { error.value = investmentError(cause); }

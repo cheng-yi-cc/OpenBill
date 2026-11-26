@@ -4,7 +4,7 @@
         <div class="search-row"><input v-model="query" aria-label="搜索加密货币" placeholder="名称或代码，例如 BTC" maxlength="64" @keydown.enter.prevent="search" /><button type="button" :disabled="busy || query.trim().length < 2" @click="search">搜索</button></div>
         <p v-if="error" role="alert">{{ error }}</p>
         <p v-if="searched && !busy && !results.length && !error">行情源中没有找到匹配币种，可在下方手动添加。</p>
-        <button v-for="item in results" :key="item.provider+item.providerId" class="result" type="button" :disabled="busy" @click="choose(item)"><span><strong>{{ item.symbol }}</strong> {{ item.name }}</span><small>{{ item.providerId }}</small><span>添加</span></button>
+        <button v-for="item in results" :key="item.provider+item.providerId" class="result" type="button" :disabled="busy" @click="choose(item)"><span><strong>{{ item.symbol }}</strong> {{ item.name }}</span><span>添加</span></button>
         <button class="manual-toggle" type="button" :disabled="busy" :aria-expanded="manualOpen" @click="manualOpen = !manualOpen">{{ manualOpen ? '收起手动添加' : '找不到币种？手动添加' }}</button>
         <div v-if="manualOpen" class="manual-editor">
             <p class="hint">手动币种仅保存在你的账本，不自动获取行情。可先记录数量，再到币种详情填写每枚美元或人民币价格；未填价格时显示“暂未估值”。</p>

@@ -1,0 +1,578 @@
+@property --cy-ring-progress {
+    syntax: '<number>';
+    inherits: false;
+    initial-value: 0;
+}
+
+:root {
+    --cy-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --cy-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+    --cy-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --cy-ease-press: cubic-bezier(0.2, 0, 0, 1);
+    --cy-dur-press: 70ms;
+    --cy-dur-fast: 150ms;
+    --cy-dur-normal: 220ms;
+    --cy-dur-sheet: 280ms;
+}
+
+/* Tabular numbers across all financial surfaces prevent width jitter when totals or privacy masks update. */
+.bill-amount strong,
+.inv-summary strong,
+.inv-holding-top > strong,
+.inv-title > strong,
+.inv-metrics dd,
+.debt-summary strong,
+.reimbursement-summary strong,
+.reimbursement-detail-amount,
+.budget-ring strong,
+.cy-wish-amount strong,
+.cy-book-summary strong,
+.stat-three strong,
+.stat-summary-grid strong,
+.stat-pie-center strong,
+.budget-stats strong,
+.budget-detail-values strong,
+.deposit-overview strong,
+.cy-account-balance strong {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Tactile press and subtle pointer hover on primary and secondary buttons. */
+:is(
+    .cy-button,
+    .cy-primary-action,
+    .cy-fab,
+    .cy-icon-button,
+    .inv-save,
+    .refund-primary,
+    .refund-full-btn,
+    .cy-book-move-submit,
+    .cy-books-show,
+    .cy-delete-button,
+    .cy-process-button,
+    .cy-home-load,
+    .cy-search-more,
+    .cy-load-more,
+    .debt-load,
+    .cy-asset-tools .primary,
+    .cy-asset-tools .secondary,
+    .stat-month-actions button,
+    .cy-bill-selection button,
+    .cy-transfer-swap,
+    .management-action
+) {
+    transition:
+        transform var(--cy-dur-normal) var(--cy-ease-out),
+        background-color var(--cy-dur-fast) var(--cy-ease-in-out),
+        border-color var(--cy-dur-fast) var(--cy-ease-in-out),
+        color var(--cy-dur-fast) var(--cy-ease-in-out),
+        box-shadow var(--cy-dur-fast) var(--cy-ease-out),
+        opacity var(--cy-dur-fast) var(--cy-ease-in-out);
+}
+
+:is(
+    .cy-button,
+    .cy-primary-action,
+    .inv-save,
+    .refund-primary,
+    .refund-full-btn,
+    .cy-book-move-submit,
+    .cy-books-show,
+    .cy-delete-button,
+    .cy-process-button,
+    .cy-home-load,
+    .cy-search-more,
+    .cy-load-more,
+    .debt-load,
+    .cy-asset-tools .primary,
+    .cy-asset-tools .secondary,
+    .stat-month-actions button,
+    .cy-bill-selection button
+):active:not(:disabled):not(.disabled) {
+    transition-duration: var(--cy-dur-press);
+    transform: scale(0.975);
+}
+
+:is(.cy-fab, .cy-icon-button, .cy-transfer-swap, .management-action):active:not(:disabled):not(.disabled) {
+    transition-duration: var(--cy-dur-press);
+    transform: scale(0.92);
+}
+
+/* Tactile press and clean composited feedback for interactive cards and list rows. */
+:is(
+    .cy-entry,
+    .cy-account-row,
+    .cy-data-card,
+    .cy-asset-shortcuts a,
+    .cy-asset-shortcuts button,
+    .cy-book-card,
+    .cy-mine-profile,
+    .cy-mine-grid a,
+    .cy-mine-links a,
+    .inv-holding,
+    .inv-list-button,
+    .inv-trade-buttons a,
+    .stat-rank,
+    .stat-mini-row,
+    .stat-report:not(.stat-report-head),
+    .stat-tag-row,
+    .stat-budget-row,
+    .stat-menu-item,
+    .stat-heat-month,
+    .stat-heat-large a,
+    .budget-list-row,
+    .reimbursement-row,
+    .reimbursement-accounts > a,
+    .debt-account > a,
+    .debt-actions button,
+    .cy-account-entry a,
+    .management-main,
+    .management-add,
+    button.bill-row,
+    a.bill-row
+) {
+    transition:
+        transform var(--cy-dur-normal) var(--cy-ease-out),
+        background-color var(--cy-dur-fast) var(--cy-ease-in-out),
+        border-color var(--cy-dur-fast) var(--cy-ease-in-out),
+        opacity var(--cy-dur-fast) var(--cy-ease-in-out);
+}
+
+:is(
+    .cy-data-card,
+    .cy-asset-shortcuts a,
+    .cy-asset-shortcuts button,
+    .cy-book-card,
+    .cy-mine-profile,
+    .cy-mine-grid a,
+    .stat-heat-month,
+    .stat-heat-large a,
+    .management-add
+):active:not(:disabled) {
+    transition-duration: var(--cy-dur-press);
+    transform: scale(0.986);
+}
+
+:is(
+    .cy-entry,
+    .cy-account-row,
+    .cy-mine-links a,
+    .inv-holding,
+    .inv-list-button,
+    .inv-trade-buttons a,
+    .stat-rank,
+    .stat-mini-row,
+    .stat-report:not(.stat-report-head),
+    .stat-tag-row,
+    .stat-budget-row,
+    .stat-menu-item,
+    .budget-list-row,
+    .reimbursement-row,
+    .reimbursement-accounts > a,
+    .debt-account > a,
+    .debt-actions button,
+    .cy-account-entry a,
+    .management-main,
+    button.bill-row,
+    a.bill-row
+):active:not(:disabled) {
+    transition-duration: var(--cy-dur-press);
+    transform: scale(0.992);
+    background-color: color-mix(in srgb, var(--cy-soft, rgba(18, 120, 111, 0.12)) 55%, transparent);
+}
+
+/* Segmented controls, tabs, filter chips, calendar day tiles and icon selectors. */
+:is(
+    .cy-segments button,
+    .cy-entry-types button,
+    .stat-top nav button,
+    .stat-date-strip button,
+    .stat-scope-chip,
+    .management-tabs button,
+    .reimbursement-tabs button,
+    .inv-mode button,
+    .cy-segment button,
+    .cy-debt-operations button,
+    .cy-amount-tabs button,
+    .cy-book-pills button,
+    .cy-filter-chips button,
+    .cy-search-tags button,
+    .cy-selected-tags button,
+    .cy-entry-chip,
+    .cy-calendar-grid button,
+    .cy-book-icon-grid button,
+    .cy-wish-icons button,
+    .cy-theme-options > button,
+    .cy-accent-options button,
+    .cy-category-choice,
+    .cy-category-children
+) {
+    transition:
+        transform var(--cy-dur-fast) var(--cy-ease-out),
+        background-color var(--cy-dur-fast) var(--cy-ease-out),
+        color var(--cy-dur-fast) var(--cy-ease-out),
+        border-color var(--cy-dur-fast) var(--cy-ease-out),
+        box-shadow var(--cy-dur-fast) var(--cy-ease-out);
+}
+
+:is(
+    .cy-segments button,
+    .cy-entry-types button,
+    .stat-top nav button,
+    .stat-scope-chip,
+    .cy-segment button,
+    .cy-debt-operations button,
+    .cy-amount-tabs button,
+    .cy-book-pills button,
+    .cy-filter-chips button,
+    .cy-search-tags button,
+    .cy-selected-tags button,
+    .cy-entry-chip,
+    .cy-calendar-grid button,
+    .cy-book-icon-grid button,
+    .cy-wish-icons button,
+    .cy-accent-options button,
+    .cy-category-choice
+):active:not(:disabled) {
+    transition-duration: var(--cy-dur-press);
+    transform: scale(0.96);
+}
+
+.cy-theme-options .cy-theme-mini {
+    transition: border-color var(--cy-dur-fast) var(--cy-ease-out), transform var(--cy-dur-fast) var(--cy-ease-out);
+}
+
+.cy-theme-options > button:active .cy-theme-mini {
+    transform: scale(0.975);
+}
+
+/* Tab & date strip active indicator smooth reveal. */
+.management-tabs button::after {
+    content: '';
+    position: absolute;
+    bottom: 5px;
+    left: 4px;
+    right: 4px;
+    height: 3px;
+    background: var(--cy-accent);
+    border-radius: 3px;
+    transform: scaleX(0);
+    opacity: 0;
+    transform-origin: center;
+    transition: transform var(--cy-dur-normal) var(--cy-ease-out), opacity var(--cy-dur-fast) var(--cy-ease-out);
+}
+
+.management-tabs button[aria-pressed="true"]::after {
+    transform: scaleX(1);
+    opacity: 1;
+}
+
+.stat-date-strip button::after {
+    content: '';
+    position: absolute;
+    bottom: 2px;
+    left: calc(50% - 5px);
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-bottom: 6px solid var(--cy-accent);
+    transform: scale(0.6) translateY(3px);
+    opacity: 0;
+    transition: transform var(--cy-dur-fast) var(--cy-ease-out), opacity var(--cy-dur-fast) var(--cy-ease-out);
+}
+
+.stat-date-strip button[aria-pressed="true"]::after {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    :is(
+        .cy-button,
+        .cy-primary-action,
+        .cy-fab,
+        .cy-icon-button,
+        .inv-save,
+        .refund-primary,
+        .cy-book-move-submit,
+        .cy-delete-button
+    ):hover:not(:disabled):not(.disabled) {
+        filter: brightness(1.03);
+    }
+
+    :is(
+        .cy-entry,
+        .cy-account-row,
+        .cy-mine-links a,
+        .inv-holding,
+        .inv-list-button,
+        .stat-rank,
+        .stat-mini-row,
+        .stat-menu-item,
+        .budget-list-row,
+        .reimbursement-row,
+        .management-main,
+        button.bill-row,
+        a.bill-row
+    ):hover:not(:disabled) {
+        background-color: color-mix(in srgb, var(--cy-soft, rgba(18, 120, 111, 0.08)) 42%, transparent);
+    }
+
+    :is(.cy-data-card, .cy-asset-shortcuts a, .cy-asset-shortcuts button, .cy-book-card):hover {
+        border-color: color-mix(in srgb, var(--cy-accent, #087f72) 28%, var(--cy-line, #edf0ef));
+    }
+}
+
+/* Progress bars & credit tracks smooth interpolation. */
+.stat-progress i,
+.cy-credit-track span,
+.cy-wish-track i,
+.cy-card-row > i {
+    transition: width var(--cy-dur-normal) var(--cy-ease-out), background-color var(--cy-dur-fast) var(--cy-ease-in-out);
+}
+
+/* Switches. */
+.cy-mobile-surface .fund-switch,
+.bill-switch {
+    transition: background-color var(--cy-dur-fast) var(--cy-ease-in-out);
+}
+
+.cy-mobile-surface .fund-switch::before,
+.bill-switch i {
+    transition: transform 180ms var(--cy-ease-spring), background-color var(--cy-dur-fast) var(--cy-ease-in-out);
+}
+
+/* Disclosure chevrons & expansion icons. */
+:is(
+    .cy-account-group summary .icon,
+    .inv-group-head .icon,
+    .debt-group summary .icon,
+    .bill-settlement summary > .icon,
+    .cy-book-trigger .cy-book-chevron,
+    .category-chevron,
+    .stat-expand-icon
+) {
+    transition: transform var(--cy-dur-normal) var(--cy-ease-out);
+}
+
+details:not([open]) > .inv-group-head .icon,
+details:not([open]) > summary .icon {
+    transform: rotate(-90deg);
+}
+
+.cy-book-trigger[aria-expanded="true"] .cy-book-chevron {
+    transform: rotate(180deg);
+}
+
+/* Pure-composited settle for native <details> content (avoids layout/height animation on long lists). */
+details[open] > :not(summary) {
+    animation: cy-details-reveal 160ms var(--cy-ease-out);
+}
+
+@keyframes cy-details-reveal {
+    from {
+        opacity: 0;
+        transform: translate3d(0, -3px, 0);
+    }
+    to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+}
+
+/* Root tab page subtle settle only on single-page root switches (never on subpage swipe-back). */
+.pages > .cy-main-page.page-current:only-child > .page-content > main {
+    animation: cy-root-settle 145ms var(--cy-ease-out);
+}
+
+@keyframes cy-root-settle {
+    from {
+        opacity: 0.9;
+        transform: translate3d(0, 3px, 0);
+    }
+    to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+}
+
+.cy-message[role="alert"] {
+    animation: cy-alert-in 160ms var(--cy-ease-out);
+}
+
+@keyframes cy-alert-in {
+    from {
+        opacity: 0;
+        transform: translate3d(0, -3px, 0);
+    }
+    to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+}
+
+.cy-empty[role="status"] {
+    animation: cy-loading-breathe 1.6s var(--cy-ease-in-out) infinite;
+}
+
+@keyframes cy-loading-breathe {
+    0%, 100% {
+        opacity: 0.55;
+    }
+    50% {
+        opacity: 0.95;
+    }
+}
+
+/* Unified Framework7 modal, sheet, popup, popover, dialog & toast curves. */
+.ios .sheet-modal,
+.ios .popup,
+.ios .actions-modal,
+.ios .popover,
+.ios .dialog {
+    transition-timing-function: var(--cy-ease-out);
+}
+
+.ios .sheet-modal {
+    transition-duration: var(--cy-dur-sheet);
+}
+
+.ios .sheet-modal.modal-in-swipe {
+    transition-duration: 0ms !important;
+}
+
+.ios .sheet-backdrop,
+.ios .popup-backdrop,
+.ios .popover-backdrop,
+.ios .actions-backdrop,
+.ios .dialog-backdrop {
+    transition-duration: var(--cy-dur-normal);
+    transition-timing-function: var(--cy-ease-in-out);
+}
+
+.ios .toast.cy-toast-bottom {
+    transition-timing-function: var(--cy-ease-out);
+    transition-duration: var(--cy-dur-normal);
+}
+
+/* Right-edge search filter drawer slides horizontally from the right edge (not bottom). */
+.ios .cy-search-filter.popup {
+    transform: translate3d(100%, 0, 0) !important;
+    opacity: 0;
+    transition:
+        transform var(--cy-dur-sheet) var(--cy-ease-out),
+        opacity var(--cy-dur-fast) var(--cy-ease-out) !important;
+}
+
+.ios .cy-search-filter.popup.modal-in {
+    transform: translate3d(0, 0, 0) !important;
+    opacity: 1;
+}
+
+.ios .cy-search-filter.popup.modal-out {
+    transform: translate3d(100%, 0, 0) !important;
+    opacity: 0;
+}
+
+/* Reusable Vue <Transition> primitives. */
+.cy-collapse-enter-active,
+.cy-collapse-leave-active {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition:
+        grid-template-rows var(--cy-dur-normal) var(--cy-ease-out),
+        opacity var(--cy-dur-fast) var(--cy-ease-out);
+}
+
+.cy-collapse-enter-from,
+.cy-collapse-leave-to {
+    grid-template-rows: 0fr;
+    opacity: 0;
+}
+
+.cy-collapse-inner {
+    min-height: 0;
+    overflow: hidden;
+}
+
+.cy-pop-enter-active,
+.cy-pop-leave-active {
+    transition:
+        transform 180ms var(--cy-ease-out),
+        opacity 140ms var(--cy-ease-out);
+}
+
+.cy-pop-enter-from,
+.cy-pop-leave-to {
+    opacity: 0;
+    transform: translate3d(0, -6px, 0) scale(0.96);
+}
+
+.cy-bar-up-enter-active,
+.cy-bar-up-leave-active {
+    transition:
+        transform var(--cy-dur-normal) var(--cy-ease-out),
+        opacity var(--cy-dur-fast) var(--cy-ease-out);
+}
+
+.cy-bar-up-enter-from,
+.cy-bar-up-leave-to {
+    opacity: 0;
+    transform: translate3d(0, 100%, 0);
+}
+
+.cy-fade-enter-active,
+.cy-fade-leave-active {
+    transition: opacity var(--cy-dur-fast) var(--cy-ease-out), transform var(--cy-dur-fast) var(--cy-ease-out);
+}
+
+.cy-fade-enter-from,
+.cy-fade-leave-to {
+    opacity: 0;
+    transform: translate3d(0, -2px, 0);
+}
+
+.cy-reorder-move {
+    transition: transform 200ms var(--cy-ease-out);
+}
+
+.cy-reorder-enter-active,
+.cy-reorder-leave-active {
+    transition: opacity 150ms var(--cy-ease-out), transform 180ms var(--cy-ease-out);
+}
+
+.cy-reorder-enter-from,
+.cy-reorder-leave-to {
+    opacity: 0;
+    transform: scale(0.94);
+}
+
+.cy-drag-chosen {
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.14);
+    transform: scale(1.015);
+    z-index: 3;
+}
+
+.cy-drag-ghost {
+    opacity: 0.42;
+}
+
+/* Comprehensive reduced-motion support: OS setting OR in-app animate=false. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+:root[data-reduced-motion="true"] *,
+:root[data-reduced-motion="true"] *::before,
+:root[data-reduced-motion="true"] *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+}

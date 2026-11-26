@@ -34,12 +34,13 @@ import { syncNativeSettings, isNativePersonalMode, syncNativeAppearance } from '
 import {syncAssetAutomationOnOpen} from '@/lib/asset-tools.ts';
 import {syncInvestmentPlansOnOpen} from '@/lib/investment-mobile.ts';
 import { syncMonetaryIncomeOnOpen } from '@/lib/monetary-income.ts';
-import { getTheme, isEnableSwipeBack, isEnableAnimate } from '@/lib/settings.ts';
+import { getTheme, isEnableSwipeBack } from '@/lib/settings.ts';
+import { initMotionPreferences, shouldAnimate, syncMotionDocumentFlag } from '@/lib/motion.ts';
 import { initMapProvider } from '@/lib/map/index.ts';
 import { isUserLogined, isUserUnlocked } from '@/lib/userstate.ts';
 import { updateMapCacheExpiration } from '@/lib/cache.ts';
 import { setExpenseAndIncomeAmountColor } from '@/lib/ui/common.ts';
-import { isiOSHomeScreenMode, isModalShowing, setAppFontSize } from '@/lib/ui/mobile.ts';
+import { isiOSHomeScreenMode, isModalShowing, setAppFontSize, runBackOverlayHandlers } from '@/lib/ui/mobile.ts';
 
 const { tt, getCurrentLanguageInfo, setLanguage, initLocale } = useI18n();
 document.documentElement.classList.toggle('cy-native',isNativePersonalMode());
@@ -96,7 +97,7 @@ const f7params = ref<Framework7Parameters>({
         tapHold: true
     },
     actions: {
-        animate: isEnableAnimate(),
+        animate: shouldAnimate(),
         backdrop: true,
         closeOnEscape: true
     },
@@ -104,22 +105,22 @@ const f7params = ref<Framework7Parameters>({
         buttonOk: '确定',
         buttonCancel: '取消',
         // @ts-expect-error there is an "animate" field in dialog parameters, but it is not declared in the type definition file
-        animate: isEnableAnimate(),
+        animate: shouldAnimate(),
         backdrop: true
     },
     popover: {
-        animate: isEnableAnimate(),
+        animate: shouldAnimate(),
         backdrop: true,
         closeOnEscape: true
     },
     popup: {
-        animate: isEnableAnimate(),
+        animate: shouldAnimate(),
         backdrop: true,
         closeOnEscape: true,
         swipeToClose: true
     },
     sheet: {
-        animate: isEnableAnimate(),
+        animate: shouldAnimate(),
         backdrop: true,
         closeOnEscape: true
     },
@@ -127,14 +128,14 @@ const f7params = ref<Framework7Parameters>({
         routableModals: false
     },
     view: {
-        animate: isEnableAnimate(),
-        browserHistory: !isiOSHomeScreenMode(),
+        animate: shouldAnimate(),
+        browserHistory: !isNativePersonalMode() && !isiOSHomeScreenMode(),
         browserHistoryInitialMatch: true,
         browserHistoryAnimate: false,
         iosSwipeBack: isEnableSwipeBack(),
-        iosSwipeBackAnimateShadow: false,
+        iosSwipeBackAnimateShadow: shouldAnimate(),
         mdSwipeBack: isEnableSwipeBack(),
-        mdSwipeBackAnimateShadow: false
+        mdSwipeBackAnimateShadow: shouldAnimate()
     }
 });
 
@@ -177,19 +178,80 @@ function onBackdropChanged(element: { push?: boolean, opened?: boolean }): void 
 }
 
 function resumeMonetaryIncome(): void { syncNativeSettings(); syncNativeAppearance();void syncMonetaryIncomeOnOpen();void syncCryptoDCAOnOpen();void syncInvestmentPlansOnOpen();void syncAssetAutomationOnOpen(settingsStore.appSettings.timeZone).catch(()=>{}); }
+function onVisibilityChange(): void { if (!document.hidden) resumeMonetaryIncome(); }
+let stopMotionObserver: (() => void) | undefined;
 onUnmounted(() => {
+    stopMotionObserver?.();
     if (appearanceTimer) clearInterval(appearanceTimer);
-    document.removeEventListener('visibilitychange', resumeMonetaryIncome);
+    document.removeEventListener('visibilitychange', onVisibilityChange);
     window.removeEventListener('online', resumeMonetaryIncome);
+    delete (window as Window & { __openbillHandleBack?: () => boolean }).__openbillHandleBack;
 });
 onMounted(() => {
+    stopMotionObserver = initMotionPreferences(() => settingsStore.appSettings.animate);
+    watch(() => settingsStore.appSettings.animate, enabled => {
+        syncMotionDocumentFlag(enabled);
+        const allow = shouldAnimate(enabled);
+        f7ready(app => {
+            if (app.params.view) {
+                app.params.view.animate = allow;
+                app.params.view.iosSwipeBackAnimateShadow = allow;
+                app.params.view.mdSwipeBackAnimateShadow = allow;
+            }
+            if (app.params.sheet) app.params.sheet.animate = allow;
+            if (app.params.popup) app.params.popup.animate = allow;
+            if (app.params.popover) app.params.popover.animate = allow;
+            if (app.params.actions) app.params.actions.animate = allow;
+        });
+    }, { immediate: true });
     syncNativeSettings();
     applyAppearance();appearanceTimer=setInterval(()=>{applyAppearance();void syncInvestmentPlansOnOpen();void syncMonetaryIncomeOnOpen();},60000);
-    document.addEventListener('visibilitychange', resumeMonetaryIncome);
+    document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('online', resumeMonetaryIncome);
     setAppFontSize(settingsStore.appSettings.fontSize);
 
     f7ready((f7) => {
+        (window as Window & { __openbillHandleBack?: () => boolean }).__openbillHandleBack = (): boolean => {
+            if (runBackOverlayHandlers()) return true;
+            const modals = Array.from(document.querySelectorAll<HTMLElement>('.modal-in'));
+            const top = modals.pop();
+            if (top) {
+                if (top.classList.contains('dialog')) {
+                    const cancelBtn = top.querySelector<HTMLElement>('.cy-dialog-cancel');
+                    if (cancelBtn) {
+                        cancelBtn.click();
+                        return true;
+                    }
+                    f7.dialog.close(top);
+                    return true;
+                }
+                const api = (top as HTMLElement & { f7Modal?: { close?: () => void } }).f7Modal;
+                if (api?.close) {
+                    api.close();
+                    return true;
+                }
+                if (top.classList.contains('sheet-modal')) { f7.sheet.close(top); return true; }
+                if (top.classList.contains('popup')) { f7.popup.close(top); return true; }
+                if (top.classList.contains('actions-modal')) { f7.actions.close(top); return true; }
+                if (top.classList.contains('popover')) { f7.popover.close(top); return true; }
+                const closeBtn = top.querySelector<HTMLElement>('.popup-close, .sheet-close');
+                if (closeBtn) { closeBtn.click(); return true; }
+            }
+            const viewEl = document.querySelector<HTMLElement & { f7View?: { router: { history: string[]; currentRoute?: { path?: string }; back: () => void; navigate: (path: string, opts?: Record<string, unknown>) => void } } }>('.view-main');
+            const router = viewEl?.f7View?.router;
+            if (router) {
+                if (router.history.length > 1) {
+                    router.back();
+                    return true;
+                }
+                const path = router.currentRoute?.path || '/';
+                if (path !== '/' && path !== '/unlock' && path !== '/login') {
+                    router.navigate('/', { animate: false, clearPreviousHistory: true });
+                    return true;
+                }
+            }
+            return false;
+        };
         f7.on('pageAfterIn', resumeMonetaryIncome);
         void syncMonetaryIncomeOnOpen();void syncInvestmentPlansOnOpen();
         void syncAssetAutomationOnOpen(settingsStore.appSettings.timeZone).catch(()=>{});

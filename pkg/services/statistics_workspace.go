@@ -54,7 +54,7 @@ func validateTransactionDiscount(transaction *models.Transaction) error {
 	if err != nil {
 		return err
 	}
-	if value != "0.00" && (transaction.Amount <= 0 || (transaction.Type != models.TRANSACTION_DB_TYPE_INCOME && transaction.Type != models.TRANSACTION_DB_TYPE_EXPENSE) || transaction.InvestmentEventId != "" || transaction.ReimbursementReceiptId != "") {
+	if value != "0.00" && (transaction.Amount <= 0 || (transaction.Type != models.TRANSACTION_DB_TYPE_INCOME && transaction.Type != models.TRANSACTION_DB_TYPE_EXPENSE) || transaction.ReimbursementReceiptId != "") {
 		return ErrStatisticsInvalid
 	}
 	transaction.DiscountAmount = value
@@ -93,11 +93,19 @@ var statisticsModuleIds = map[string][]string{
 	"custom": {"cash", "wealth", "flow", "categories", "ranking", "report", "accounts", "tagShare", "tags"},
 }
 
+var defaultVisibleStatisticsModules = map[string]map[string]bool{
+	"daily":  {"cash": true, "assets": true, "budget": true},
+	"month":  {"cash": true, "categories": true, "ranking": true, "wealth": true, "note": true},
+	"year":   {"cash": true, "heatmap": true, "categories": true, "ranking": true, "wealth": true, "note": true},
+	"custom": {"cash": true, "categories": true, "ranking": true, "wealth": true},
+}
+
 func defaultStatisticsPreferences() *models.StatisticsPreferences {
 	p := &models.StatisticsPreferences{Revision: "0", Modules: map[string][]models.StatisticsModule{}, DailyBudgetMode: "remaining", BudgetProgress: "remaining"}
 	for period, ids := range statisticsModuleIds {
+		visibleSet := defaultVisibleStatisticsModules[period]
 		for _, id := range ids {
-			p.Modules[period] = append(p.Modules[period], models.StatisticsModule{Id: id, Visible: true})
+			p.Modules[period] = append(p.Modules[period], models.StatisticsModule{Id: id, Visible: visibleSet[id]})
 		}
 	}
 	return p

@@ -2,8 +2,8 @@
 .management-card{background:var(--cy-card);border-radius:12px;margin-bottom:14px;overflow:hidden}
 .management-head{display:flex;align-items:center;min-height:58px;padding:2px 8px 2px 15px;gap:3px}
 .management-main{display:flex;align-items:center;gap:12px;flex:1;min-width:0;align-self:stretch;border:0;background:none;text-align:left;padding:10px 0;color:var(--cy-ink)}
-.management-name{font-size:16px;line-height:1.5;overflow-wrap:anywhere;min-width:0}
-.management-name small{display:block;font-size:11px;font-weight:400;color:var(--cy-muted);margin-top:2px}
+.management-name{font-size:calc(16px * var(--cy-font-scale, 1));line-height:1.5;overflow-wrap:anywhere;min-width:0}
+.management-name small{display:block;font-size:calc(11px * var(--cy-font-scale, 1));font-weight:400;color:var(--cy-muted);margin-top:2px}
 .management-icon{display:grid;place-items:center;width:29px;flex-shrink:0}.management-icon :deep(.icon){font-size:24px}
 .management-action{display:grid;place-items:center;flex:0 0 42px;width:42px;height:44px;border:0;background:none;color:var(--cy-muted);padding:0}
 .management-action .icon{font-size:21px}.management-action:active,.management-main:active{color:var(--cy-accent)}

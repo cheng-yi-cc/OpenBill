@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -21,13 +22,142 @@ import (
 // investment fact. The ordinary ledger contains one linked CNY posting for
 // reporting; that system posting is excluded from all asset balances.
 type WalletEntry struct {
-	Currency   string `json:"currency"`
-	CategoryID string `json:"categoryId"`
-	FXDate     string `json:"fxDate"`
-	FXSource   string `json:"fxSource"`
+	Currency              string                                       `json:"currency"`
+	CategoryID            string                                       `json:"categoryId"`
+	FXDate                string                                       `json:"fxDate"`
+	FXSource              string                                       `json:"fxSource"`
+	ExcludeFromStatistics *bool                                        `json:"excludeFromStatistics,omitempty"`
+	ExcludeFromBudget     *bool                                        `json:"excludeFromBudget,omitempty"`
+	HideAmount            *bool                                        `json:"hideAmount,omitempty"`
+	LocationName          *string                                      `json:"locationName,omitempty"`
+	TagIDs                *[]string                                    `json:"tagIds,omitempty"`
+	DiscountAmount        *string                                      `json:"discountAmount,omitempty"`
+	PictureIDs            *[]string                                    `json:"pictureIds,omitempty"`
+	Pictures              models.TransactionPictureInfoBasicResponseSlice `json:"pictures,omitempty"`
 }
 
-func (s *InvestmentService) validateWalletEntry(sess *xorm.Session, uid int64, e *InvestmentEvent) error {
+// walletTagIndexes reads the active posting before settlement is reversed.
+// An omitted field from an older client preserves these authoritative indexes.
+func walletTagIndexes(sess *xorm.Session, uid int64, eventID string) ([]models.TransactionTagIndex, error) {
+	var postings []models.Transaction
+	if err := sess.Where("uid=? AND investment_event_id=? AND deleted=?", uid, eventID, false).Find(&postings); err != nil {
+		return nil, err
+	}
+	if len(postings) != 1 {
+		return nil, investmentError("钱包流水关联异常，请先检查账本")
+	}
+	var indexes []models.TransactionTagIndex
+	err := sess.Where("uid=? AND transaction_id=? AND deleted=?", uid, postings[0].TransactionId, false).Find(&indexes)
+	return indexes, err
+}
+
+func walletTagIDs(w *WalletEntry, previous []models.TransactionTagIndex) ([]int64, error) {
+	if w.TagIDs == nil {
+		ids := make([]string, 0, len(previous))
+		for _, index := range previous {
+			ids = append(ids, strconv.FormatInt(index.TagId, 10))
+		}
+		w.TagIDs = &ids
+	}
+	if len(*w.TagIDs) > models.MaximumTagsCountOfTransaction {
+		return nil, investmentError("钱包收支标签数量超出上限")
+	}
+	ids := make([]int64, 0, len(*w.TagIDs))
+	seen := make(map[int64]bool, len(*w.TagIDs))
+	for _, text := range *w.TagIDs {
+		id, err := strconv.ParseInt(text, 10, 64)
+		if err != nil || id <= 0 || strconv.FormatInt(id, 10) != text || seen[id] {
+			return nil, investmentError("钱包收支标签无效或重复")
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+func walletPictureInfos(sess *xorm.Session, uid int64, eventID string) ([]models.TransactionPictureInfo, error) {
+	var postings []models.Transaction
+	if err := sess.Where("uid=? AND investment_event_id=? AND deleted=?", uid, eventID, false).Find(&postings); err != nil {
+		return nil, err
+	}
+	if len(postings) != 1 {
+		return nil, investmentError("钱包流水关联异常，请先检查账本")
+	}
+	var infos []models.TransactionPictureInfo
+	err := sess.Where("uid=? AND transaction_id=? AND deleted=?", uid, postings[0].TransactionId, false).OrderBy("picture_id asc").Find(&infos)
+	return infos, err
+}
+
+func walletPictureResponses(infos []models.TransactionPictureInfo) models.TransactionPictureInfoBasicResponseSlice {
+	if len(infos) == 0 {
+		return nil
+	}
+	result := make(models.TransactionPictureInfoBasicResponseSlice, 0, len(infos))
+	for _, info := range infos {
+		p := info
+		result = append(result, p.ToTransactionPictureInfoBasicResponse(fmt.Sprintf("/pictures/%d.%s", p.PictureId, p.PictureExtension)))
+	}
+	return result
+}
+
+func walletPictureIDs(sess *xorm.Session, uid int64, w *WalletEntry, previous []models.TransactionPictureInfo) ([]int64, models.TransactionPictureInfoBasicResponseSlice, error) {
+	if w.PictureIDs == nil {
+		ids := make([]string, 0, len(previous))
+		picIDs := make([]int64, 0, len(previous))
+		for _, info := range previous {
+			ids = append(ids, strconv.FormatInt(info.PictureId, 10))
+			picIDs = append(picIDs, info.PictureId)
+		}
+		w.PictureIDs = &ids
+		return picIDs, walletPictureResponses(previous), nil
+	}
+	if len(*w.PictureIDs) > models.MaximumPicturesCountOfTransaction {
+		return nil, nil, investmentError("钱包收支附件数量超出上限")
+	}
+	ids := make([]int64, 0, len(*w.PictureIDs))
+	seen := make(map[int64]bool, len(*w.PictureIDs))
+	prevMap := make(map[int64]models.TransactionPictureInfo, len(previous))
+	for _, info := range previous {
+		prevMap[info.PictureId] = info
+	}
+	var lookupNew []int64
+	for _, text := range *w.PictureIDs {
+		id, err := strconv.ParseInt(text, 10, 64)
+		if err != nil || id <= 0 || strconv.FormatInt(id, 10) != text || seen[id] {
+			return nil, nil, investmentError("钱包收支附件无效或重复")
+		}
+		seen[id] = true
+		ids = append(ids, id)
+		if _, ok := prevMap[id]; !ok {
+			lookupNew = append(lookupNew, id)
+		}
+	}
+	newMap := make(map[int64]models.TransactionPictureInfo, len(lookupNew))
+	if len(lookupNew) > 0 {
+		var rows []models.TransactionPictureInfo
+		if err := sess.Where("uid=? AND deleted=? AND transaction_id=?", uid, false, models.TransactionPictureNewPictureTransactionId).In("picture_id", lookupNew).Find(&rows); err != nil {
+			return nil, nil, err
+		}
+		for _, row := range rows {
+			newMap[row.PictureId] = row
+		}
+	}
+	infos := make([]models.TransactionPictureInfo, 0, len(ids))
+	for _, id := range ids {
+		if info, ok := prevMap[id]; ok {
+			infos = append(infos, info)
+			continue
+		}
+		if info, ok := newMap[id]; ok {
+			infos = append(infos, info)
+			continue
+		}
+		return nil, nil, investmentError("钱包收支附件无效或已被其他账单使用")
+	}
+	return ids, walletPictureResponses(infos), nil
+}
+
+func (s *InvestmentService) validateWalletEntry(sess *xorm.Session, uid int64, e *InvestmentEvent, old *InvestmentEvent) error {
 	w := e.Wallet
 	if w == nil || (w.Currency != "CNY" && w.Currency != "USD") || len(w.CategoryID) > 20 || len(w.FXSource) > 100 || len(w.FXDate) > 10 || utf8.RuneCountInString(e.Note) > 255 || e.CashAccountID != "" || e.Conversion != nil || e.OccurredAt <= 0 || e.OccurredAt > time.Now().Unix()+60 {
 		return investmentError("请核对钱包收支的币种、日期和备注")
@@ -35,12 +165,15 @@ func (s *InvestmentService) validateWalletEntry(sess *xorm.Session, uid int64, e
 	if _, err := time.Parse("2006-01-02", w.FXDate); err != nil || w.FXSource == "" {
 		return investmentError("请确认本笔收支的人民币汇率及日期")
 	}
+	if w.LocationName != nil && utf8.RuneCountInString(*w.LocationName) > 200 {
+		return investmentError("地点名称不能超过 200 个字符")
+	}
 	if w.Currency == "CNY" && e.ExchangeRate != "1" {
 		return investmentError("人民币记账汇率必须为 1")
 	}
 	for _, value := range []string{e.Amount, e.ExchangeRate} {
 		if err := investments.ValidateDecimal(value); err != nil {
-			return investmentError("金额和汇率必须是有效十进制字符串")
+			return investmentError("金额和汇率请输入有效数字（最多 18 位小数）")
 		}
 	}
 	amount, _ := decimal.NewFromString(e.Amount)
@@ -48,6 +181,22 @@ func (s *InvestmentService) validateWalletEntry(sess *xorm.Session, uid int64, e
 	minor := amount.Mul(rate).Round(2).Shift(2)
 	if !amount.IsPositive() || amount.Exponent() < -2 || !rate.IsPositive() || !minor.IsPositive() || minor.GreaterThan(decimal.NewFromInt(models.MaximumTransactionAmount)) {
 		return investmentError("金额或折算金额超出范围，记账金额最多两位小数")
+	}
+	if w.DiscountAmount != nil {
+		trimmed := strings.TrimSpace(*w.DiscountAmount)
+		if trimmed == "" {
+			trimmed = "0"
+		}
+		normalized, err := normalizeStatisticsMoney(trimmed)
+		if err != nil {
+			return investmentError("优惠金额格式无效，请填写非负且最多两位小数的金额")
+		}
+		discount, _ := decimal.NewFromString(normalized)
+		limit := decimal.NewFromInt(models.MaximumTransactionAmount)
+		if discount.Shift(2).GreaterThan(limit) || discount.Mul(rate).Round(2).Shift(2).GreaterThan(limit) {
+			return investmentError("优惠金额超出范围")
+		}
+		*w.DiscountAmount = normalized
 	}
 	var account models.PortfolioAccount
 	found, err := sess.Where("uid=? AND id=?", uid, e.AccountID).Get(&account)
@@ -100,10 +249,18 @@ func (s *InvestmentService) validateWalletEntry(sess *xorm.Session, uid int64, e
 	}
 	// Linked investment postings normally bypass category validation; wallet
 	// consumption is ordinary income/expense and must validate it explicitly.
-	return Transactions.isCategoryValid(sess, tx)
+	oldBook := ""
+	if old != nil {
+		oldBook = old.BookID
+		if oldBook == "" {
+			oldBook = DefaultBookID(uid)
+		}
+	}
+	unchanged := old != nil && old.Wallet != nil && old.Type == e.Type && oldBook == e.BookID && old.Wallet.CategoryID == w.CategoryID
+	return Transactions.isCategoryValidWithHidden(sess, tx, unchanged)
 }
 
-func (s *InvestmentService) settleWallet(c core.Context, sess *xorm.Session, uid int64, e InvestmentEvent, zone string) error {
+func (s *InvestmentService) settleWallet(c core.Context, sess *xorm.Session, uid int64, e InvestmentEvent, zone string, tagIDs []int64, previous []models.TransactionTagIndex, pictureIDs []int64, previousPictures []models.TransactionPictureInfo) error {
 	system := new(models.Account)
 	has, err := sess.Where("uid=? AND currency=? AND system_role=? AND deleted=?", uid, "CNY", InvestmentSettlementRole, false).Get(system)
 	if err != nil {
@@ -130,9 +287,104 @@ func (s *InvestmentService) settleWallet(c core.Context, sess *xorm.Session, uid
 	if e.Type == investments.Income {
 		kind = models.TRANSACTION_DB_TYPE_INCOME
 	}
-	tx := &models.Transaction{Uid: uid, BookId: e.BookID, Type: kind, AccountId: system.AccountId, Amount: amount.Mul(rate).Round(2).Shift(2).IntPart(), CategoryId: category, TransactionTime: utils.GetMinTransactionTimeFromUnixTime(e.OccurredAt), TimezoneUtcOffset: int16(offset / 60), Comment: e.Note, InvestmentEventId: e.ID}
-	if err = Transactions.createTransactionInSession(c, sess, tx, nil, nil); err != nil {
+	discountCNY := "0"
+	if e.Wallet.DiscountAmount != nil && *e.Wallet.DiscountAmount != "" {
+		discount, _ := decimal.NewFromString(*e.Wallet.DiscountAmount)
+		discountCNY = discount.Mul(rate).Round(2).StringFixed(2)
+	}
+	tx := &models.Transaction{Uid: uid, BookId: e.BookID, Type: kind, AccountId: system.AccountId, Amount: amount.Mul(rate).Round(2).Shift(2).IntPart(), DiscountAmount: discountCNY, CategoryId: category, TransactionTime: utils.GetMinTransactionTimeFromUnixTime(e.OccurredAt), TimezoneUtcOffset: int16(offset / 60), Comment: e.Note, InvestmentEventId: e.ID}
+	if e.Wallet.ExcludeFromStatistics != nil {
+		tx.ExcludeFromStatistics = *e.Wallet.ExcludeFromStatistics
+	}
+	// A missing budget flag on legacy wallet records means included, independently
+	// of the income/expense flag on newer records.
+	budgetExcluded := e.Wallet.ExcludeFromBudget != nil && *e.Wallet.ExcludeFromBudget
+	tx.SetBudgetExclusion(&budgetExcluded)
+	if e.Wallet.HideAmount != nil {
+		tx.HideAmount = *e.Wallet.HideAmount
+	}
+	if e.Wallet.LocationName != nil {
+		tx.LocationName = *e.Wallet.LocationName
+	}
+	oldByTag := make(map[int64]models.TransactionTagIndex, len(previous))
+	for _, index := range previous {
+		if _, exists := oldByTag[index.TagId]; exists {
+			return investmentError("钱包流水标签关联异常，请先检查账本")
+		}
+		oldByTag[index.TagId] = index
+	}
+	newIDs := make([]int64, 0, len(tagIDs))
+	for _, id := range tagIDs {
+		if _, exists := oldByTag[id]; !exists {
+			newIDs = append(newIDs, id)
+		}
+	}
+	oldByPic := make(map[int64]models.TransactionPictureInfo, len(previousPictures))
+	for _, info := range previousPictures {
+		oldByPic[info.PictureId] = info
+	}
+	newPicIDs := make([]int64, 0, len(pictureIDs))
+	keptPicIDs := make([]int64, 0, len(pictureIDs))
+	keptPicSet := make(map[int64]bool, len(pictureIDs))
+	for _, id := range pictureIDs {
+		if _, exists := oldByPic[id]; exists {
+			keptPicIDs = append(keptPicIDs, id)
+			keptPicSet[id] = true
+		} else {
+			newPicIDs = append(newPicIDs, id)
+		}
+	}
+	if err = Transactions.createTransactionInSession(c, sess, tx, newIDs, newPicIDs); err != nil {
 		return err
+	}
+	now := time.Now().Unix()
+	for _, id := range tagIDs {
+		index, exists := oldByTag[id]
+		if !exists {
+			continue
+		}
+		valid, err := sess.Where("uid=? AND tag_id=? AND deleted=?", uid, id, false).Exist(&models.TransactionTag{})
+		if err != nil {
+			return err
+		}
+		if !valid {
+			return errs.ErrTransactionTagNotFound
+		}
+		n, err := sess.ID(index.TagIndexId).Where("uid=? AND transaction_id=? AND deleted=?", uid, index.TransactionId, true).
+			Cols("transaction_id", "transaction_time", "deleted", "deleted_unix_time", "updated_unix_time").
+			Update(&models.TransactionTagIndex{TransactionId: tx.TransactionId, TransactionTime: tx.TransactionTime, Deleted: false, DeletedUnixTime: 0, UpdatedUnixTime: now})
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return ErrInvestmentConflict
+		}
+	}
+	for _, id := range keptPicIDs {
+		prev := oldByPic[id]
+		n, err := sess.ID(id).Where("uid=? AND transaction_id=? AND deleted=?", uid, prev.TransactionId, false).
+			Cols("transaction_id", "updated_unix_time").
+			Update(&models.TransactionPictureInfo{TransactionId: tx.TransactionId, UpdatedUnixTime: now})
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return ErrInvestmentConflict
+		}
+	}
+	for _, prev := range previousPictures {
+		if keptPicSet[prev.PictureId] {
+			continue
+		}
+		n, err := sess.ID(prev.PictureId).Where("uid=? AND transaction_id=? AND deleted=?", uid, prev.TransactionId, false).
+			Cols("deleted", "deleted_unix_time").
+			Update(&models.TransactionPictureInfo{Deleted: true, DeletedUnixTime: now})
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return ErrInvestmentConflict
+		}
 	}
 	if _, err = sess.Insert(&models.InvestmentTransactionLink{Uid: uid, EventId: e.ID, TransactionId: tx.TransactionId}); err != nil {
 		return err

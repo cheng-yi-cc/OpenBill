@@ -95,6 +95,9 @@ func (s *CalendarService) Save(c core.Context, uid int64, req models.CalendarSav
 			if item.TransactionId > 0 {
 				return investmentError("请在原借款账单中修改约定还款日期")
 			}
+			if err := guardFixedDepositCalendarEvent(sess, uid, item.Id); err != nil {
+				return err
+			}
 		}
 		bookId, err := Books.ResolveInSession(sess, uid, req.BookId, false)
 		if err != nil {
@@ -136,6 +139,9 @@ func (s *CalendarService) Save(c core.Context, uid int64, req models.CalendarSav
 
 func (s *CalendarService) SetCompleted(c core.Context, uid int64, id string, completed bool) (bool, error) {
 	return s.change(c, uid, id, func(sess *xorm.Session) (int64, error) {
+		if err := guardFixedDepositCalendarEvent(sess, uid, id); err != nil {
+			return 0, err
+		}
 		return sess.ID(id).Where("uid=?", uid).Cols("completed").Update(&models.CalendarEvent{Completed: completed})
 	})
 }
@@ -148,8 +154,22 @@ func (s *CalendarService) Delete(c core.Context, uid int64, id string) (bool, er
 		if item.TransactionId > 0 {
 			return 0, investmentError("请在原借款账单中清除约定还款日期")
 		}
+		if err := guardFixedDepositCalendarEvent(sess, uid, id); err != nil {
+			return 0, err
+		}
 		return sess.ID(id).Where("uid=?", uid).Delete(&models.CalendarEvent{})
 	})
+}
+
+func guardFixedDepositCalendarEvent(sess *xorm.Session, uid int64, id string) error {
+	has, err := sess.ID(id).Where("uid=?", uid).Exist(&models.FixedDeposit{})
+	if err != nil {
+		return err
+	}
+	if has {
+		return investmentError("请在定存记录中管理到期事项")
+	}
+	return nil
 }
 
 func (s *CalendarService) DeleteAll(c core.Context, uid int64) error {

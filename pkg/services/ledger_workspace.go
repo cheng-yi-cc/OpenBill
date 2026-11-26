@@ -76,20 +76,38 @@ func ledgerReferenceIds(sess *xorm.Session, uid int64, kind string, ids []string
 }
 func validateLedgerWish(sess *xorm.Session, uid int64, data json.RawMessage) ([]byte, error) {
 	var wish models.LedgerWish
-	if json.Unmarshal(data, &wish) != nil || strings.TrimSpace(wish.Name) == "" || utf8.RuneCountInString(wish.Name) > 64 || utf8.RuneCountInString(wish.Note) > 1000 || !ledgerIconPattern.MatchString(wish.Icon) || !validCalendarDate(wish.StartDate) || (wish.EndDate != "" && (!validCalendarDate(wish.EndDate) || wish.EndDate < wish.StartDate)) || len(wish.Logs) > 300 {
+	if json.Unmarshal(data, &wish) != nil {
 		return nil, ErrLedgerItemInvalid
+	}
+	if strings.TrimSpace(wish.Name) == "" {
+		return nil, investmentError("请填写愿望名称")
+	}
+	if utf8.RuneCountInString(wish.Name) > 64 {
+		return nil, investmentError("愿望名称不能超过 64 个字")
+	}
+	if utf8.RuneCountInString(wish.Note) > 1000 || !ledgerIconPattern.MatchString(wish.Icon) || len(wish.Logs) > 300 {
+		return nil, ErrLedgerItemInvalid
+	}
+	if !validCalendarDate(wish.StartDate) {
+		return nil, investmentError("请选择有效的开始日期")
+	}
+	if wish.EndDate != "" && (!validCalendarDate(wish.EndDate) || wish.EndDate < wish.StartDate) {
+		return nil, investmentError("目标日期不能早于开始日期")
 	}
 	for _, field := range []*string{&wish.Target, &wish.Initial, &wish.Amount, &wish.Ratio} {
 		v, err := normalizeStatisticsMoney(*field)
 		if err != nil {
-			return nil, ErrLedgerItemInvalid
+			return nil, investmentError("金额或比例格式有误，请填写两位以内小数的正数")
 		}
 		*field = v
 	}
 	target, _ := decimal.NewFromString(wish.Target)
 	ratio, _ := decimal.NewFromString(wish.Ratio)
-	if !target.IsPositive() || ratio.GreaterThan(decimal.NewFromInt(100)) {
-		return nil, ErrLedgerItemInvalid
+	if !target.IsPositive() {
+		return nil, investmentError("目标金额必须大于 0")
+	}
+	if ratio.GreaterThan(decimal.NewFromInt(100)) {
+		return nil, investmentError("提取比例不能超过 100%")
 	}
 	switch wish.Mode {
 	case "manual", "schedule", "income", "balance", "asset":
@@ -103,7 +121,7 @@ func validateLedgerWish(sess *xorm.Session, uid int64, data json.RawMessage) ([]
 	}
 	for kind, ids := range map[string][]string{"book": wish.BookIds, "account": wish.AccountIds, "category": append(append([]string{}, wish.IncomeCategoryIds...), wish.ExpenseCategoryIds...)} {
 		if err := ledgerReferenceIds(sess, uid, kind, ids); err != nil {
-			return nil, err
+			return nil, investmentError("所选账本、账户或分类已不可用，请重新选择")
 		}
 	}
 	seen := map[string]bool{}
@@ -117,49 +135,55 @@ func validateLedgerWish(sess *xorm.Session, uid int64, data json.RawMessage) ([]
 		negative := strings.HasPrefix(log.Amount, "-")
 		value, err := normalizeStatisticsMoney(strings.TrimPrefix(log.Amount, "-"))
 		if err != nil {
-			return nil, ErrLedgerItemInvalid
+			return nil, investmentError("存取记录金额格式有误")
 		}
 		amount, _ := decimal.NewFromString(value)
 		if negative {
 			amount = amount.Neg()
 		}
 		if amount.IsZero() {
-			return nil, ErrLedgerItemInvalid
+			return nil, investmentError("存取金额不能为 0")
 		}
 		log.Amount = amount.StringFixed(2)
 		saved = saved.Add(amount)
 	}
 	if wish.Mode == "manual" && saved.IsNegative() {
-		return nil, ErrLedgerItemInvalid
+		return nil, investmentError("累计取出金额不能超过当前已存金额")
 	}
 	wish.Name = strings.TrimSpace(wish.Name)
 	return json.Marshal(wish)
 }
 func validateLedgerKeyword(sess *xorm.Session, uid int64, data json.RawMessage) ([]byte, error) {
 	var rule models.LedgerKeywordRule
-	if json.Unmarshal(data, &rule) != nil || len(rule.Keywords) == 0 || len(rule.Keywords) > 100 {
+	if json.Unmarshal(data, &rule) != nil {
 		return nil, ErrLedgerItemInvalid
+	}
+	if len(rule.Keywords) == 0 {
+		return nil, investmentError("请至少填写一个关键词")
+	}
+	if len(rule.Keywords) > 100 {
+		return nil, investmentError("单条规则最多支持 100 个关键词")
 	}
 	for i, word := range rule.Keywords {
 		word = strings.TrimSpace(word)
 		if word == "" || utf8.RuneCountInString(word) > 64 {
-			return nil, ErrLedgerItemInvalid
+			return nil, investmentError("关键词不能为空，且不超过 64 个字")
 		}
 		rule.Keywords[i] = word
 	}
 	if err := ledgerReferenceIds(sess, uid, "category", []string{rule.CategoryId}); err != nil {
-		return nil, err
+		return nil, investmentError("请选择有效的目标分类")
 	}
 	if rule.AccountId != "" {
 		if err := ledgerReferenceIds(sess, uid, "account", []string{rule.AccountId}); err != nil {
-			return nil, err
+			return nil, investmentError("所选默认账户已不可用，请重新选择")
 		}
 	}
 	if len(rule.TagIds) > 10 {
-		return nil, ErrLedgerItemInvalid
+		return nil, investmentError("单条规则最多附加 10 个标签")
 	}
 	if err := ledgerReferenceIds(sess, uid, "tag", rule.TagIds); err != nil {
-		return nil, err
+		return nil, investmentError("所选标签已不可用，请重新选择")
 	}
 	return json.Marshal(rule)
 }

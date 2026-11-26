@@ -17,22 +17,24 @@ import (
 )
 
 type CreditInstallmentInput struct {
-	Id             string                            `json:"id"`
-	Version        string                            `json:"version"`
-	AccountId      string                            `json:"accountId"`
-	ExpenseId      string                            `json:"expenseId"`
-	StatementMonth string                            `json:"statementMonth"`
-	Principal      string                            `json:"principal"`
-	TotalFee       string                            `json:"totalFee"`
-	Periods        int                               `json:"periods"`
-	FirstDate      string                            `json:"firstDate"`
-	Method         string                            `json:"method"`
-	Remainder      string                            `json:"remainder"`
-	BookId         string                            `json:"bookId"`
-	TimeZone       string                            `json:"timeZone"`
-	Note           string                            `json:"note"`
-	RequestId      string                            `json:"requestId"`
-	Payments       []models.CreditInstallmentPayment `json:"payments"`
+	Id                      string                            `json:"id"`
+	Version                 string                            `json:"version"`
+	AccountId               string                            `json:"accountId"`
+	ExpenseId               string                            `json:"expenseId"`
+	StatementMonth          string                            `json:"statementMonth"`
+	Principal               string                            `json:"principal"`
+	TotalFee                string                            `json:"totalFee"`
+	Periods                 int                               `json:"periods"`
+	FirstDate               string                            `json:"firstDate"`
+	Method                  string                            `json:"method"`
+	Remainder               string                            `json:"remainder"`
+	BookId                  string                            `json:"bookId"`
+	TimeZone                string                            `json:"timeZone"`
+	Note                    string                            `json:"note"`
+	RequestId               string                            `json:"requestId"`
+	Payments                []models.CreditInstallmentPayment `json:"payments"`
+	AllowRefundedExpense    bool                              `json:"allowRefundedExpense,omitempty"`
+	AllowOtherAccountRefund bool                              `json:"allowOtherAccountRefund,omitempty"`
 }
 
 func splitCreditAmount(amount decimal.Decimal, n int, where string) []decimal.Decimal {
@@ -170,7 +172,7 @@ func (s *InvestmentService) SaveCreditInstallment(c core.Context, uid int64, inp
 			}
 			if has {
 				if existing.Uid != uid || existing.RequestDigest != digest {
-					return investmentError("请求已使用，请刷新后重试")
+					return investmentError("页面状态已过期，请刷新后重试")
 				}
 				*row = existing
 				return nil
@@ -219,19 +221,51 @@ func (s *InvestmentService) SaveCreditInstallment(c core.Context, uid int64, inp
 		if e = sess.Where("uid=? AND account_id=? AND closed=? AND id<>?", uid, id, false, row.Id).Find(&others); e != nil {
 			return e
 		}
+		linkedRefundCash := map[int64]bool{}
+		if expenseID == 0 && len(txs) > 0 {
+			cashIDs := make([]int64, 0, len(txs))
+			for _, tx := range txs {
+				if tx.Type == models.TRANSACTION_DB_TYPE_EXPENSE && tx.Amount < 0 {
+					cashIDs = append(cashIDs, tx.TransactionId)
+				}
+			}
+			for start := 0; start < len(cashIDs); start += 400 {
+				end := start + 400
+				if end > len(cashIDs) {
+					end = len(cashIDs)
+				}
+				var cashRefunds []models.Refund
+				if e = sess.Where("uid=? AND deleted=?", uid, false).In("transaction_id", cashIDs[start:end]).Find(&cashRefunds); e != nil {
+					return e
+				}
+				for _, refund := range cashRefunds {
+					linkedRefundCash[refund.TransactionId] = true
+				}
+			}
+		}
 		available := decimal.Zero
 		originDate := ""
+		selectedIDs := make([]int64, 0)
+		txNet := map[int64]decimal.Decimal{}
+		reduceCardRefunds := decimal.Zero
 		zone, _ := time.LoadLocation(data.TimeZone)
 		for _, tx := range txs {
+			if linkedRefundCash[tx.TransactionId] {
+				continue
+			}
 			at := time.Unix(utils.GetUnixTimeFromTransactionTime(tx.TransactionTime), 0).In(zone)
 			month, _, _, _ := creditCycle(account, at)
 			selected := expenseID > 0 && tx.TransactionId == expenseID || expenseID == 0 && month == input.StatementMonth
 			if !selected {
 				continue
 			}
+			selectedIDs = append(selectedIDs, tx.TransactionId)
 			amount := decimal.New(tx.Amount, -2)
 			if tx.Type == models.TRANSACTION_DB_TYPE_EXPENSE || tx.Type == models.TRANSACTION_DB_TYPE_TRANSFER_OUT {
 				available = available.Add(amount)
+				if tx.Type == models.TRANSACTION_DB_TYPE_EXPENSE && tx.Amount > 0 {
+					txNet[tx.TransactionId] = amount
+				}
 				if originDate == "" || at.Format("2006-01-02") < originDate {
 					originDate = at.Format("2006-01-02")
 				}
@@ -246,8 +280,93 @@ func (s *InvestmentService) SaveCreditInstallment(c core.Context, uid int64, inp
 				}
 			}
 		}
+		// Refunds returned to this account reduce its financeable principal.
+		// Other destinations require separate opt-in for older API clients.
+		if len(selectedIDs) > 0 {
+			if !input.AllowRefundedExpense {
+				if e = guardRefundTransactions(sess, uid, selectedIDs); e != nil {
+					return e
+				}
+			} else {
+				var refunds []models.Refund
+				if e = sess.Where("uid=? AND deleted=?", uid, false).In("expense_id", selectedIDs).Find(&refunds); e != nil {
+					return e
+				}
+				for _, refund := range refunds {
+					cash, e := refundCash(sess, uid, &refund)
+					if e != nil {
+						return e
+					}
+					refundDate := time.Unix(utils.GetUnixTimeFromTransactionTime(cash.TransactionTime), 0).In(zone).Format("2006-01-02")
+					if expenseID > 0 && refund.InstallmentMode == "" && refundDate > originDate {
+						originDate = refundDate
+					}
+					if cash.AccountId != id {
+						if !input.AllowOtherAccountRefund {
+							return investmentError("退款未全部退回原信贷账户，暂不能分期")
+						}
+						continue
+					}
+					refundAmt := decimal.New(-cash.Amount, -2)
+					if expenseID > 0 && refund.InstallmentMode == "reduce" {
+						reduceCardRefunds = reduceCardRefunds.Add(refundAmt)
+					}
+					if expenseID > 0 && input.Id != "" && refund.InstallmentMode == "offset" {
+						continue
+					}
+					if curNet, ok := txNet[refund.ExpenseId]; ok {
+						deduct := refundAmt
+						if expenseID == 0 && deduct.GreaterThan(curNet) {
+							deduct = curNet
+						}
+						txNet[refund.ExpenseId] = curNet.Sub(deduct)
+						if expenseID == 0 {
+							available = available.Sub(deduct)
+							continue
+						}
+					}
+					available = available.Sub(refundAmt)
+				}
+			}
+		}
+		selectedSet := map[int64]bool{}
+		for _, sid := range selectedIDs {
+			selectedSet[sid] = true
+		}
 		for _, plan := range others {
 			if plan.Data == nil {
+				continue
+			}
+			if expenseID == 0 {
+				if plan.ExpenseId == 0 && plan.StatementMonth == input.StatementMonth {
+					p, _ := decimal.NewFromString(plan.Data.Principal)
+					available = available.Sub(p)
+					continue
+				}
+				if plan.ExpenseId > 0 && selectedSet[plan.ExpenseId] {
+					p, _ := decimal.NewFromString(plan.Data.Principal)
+					if net, ok := txNet[plan.ExpenseId]; ok {
+						subtract := decimal.Min(p, net)
+						txNet[plan.ExpenseId] = net.Sub(subtract)
+						available = available.Sub(subtract)
+					} else {
+						available = available.Sub(p)
+					}
+				}
+				for _, payment := range plan.Data.Payments {
+					at, parseErr := time.ParseInLocation("2006-01-02", payment.Date, zone)
+					if parseErr != nil {
+						continue
+					}
+					pm, _, _, _ := creditCycle(account, at)
+					if pm == input.StatementMonth {
+						part, _ := decimal.NewFromString(payment.Principal)
+						available = available.Add(part)
+						if originDate == "" || payment.Date < originDate {
+							originDate = payment.Date
+						}
+					}
+				}
 				continue
 			}
 			same := plan.ExpenseId == expenseID && plan.StatementMonth == input.StatementMonth
@@ -258,7 +377,7 @@ func (s *InvestmentService) SaveCreditInstallment(c core.Context, uid int64, inp
 						continue
 					}
 					month, _, _, _ := creditCycle(account, time.Unix(utils.GetUnixTimeFromTransactionTime(tx.TransactionTime), 0).In(zone))
-					if expenseID == 0 && tx.TransactionId == plan.ExpenseId && month == input.StatementMonth || plan.ExpenseId == 0 && tx.TransactionId == expenseID && month == plan.StatementMonth {
+					if plan.ExpenseId == 0 && tx.TransactionId == expenseID && month == plan.StatementMonth {
 						same = true
 					}
 				}
@@ -269,6 +388,11 @@ func (s *InvestmentService) SaveCreditInstallment(c core.Context, uid int64, inp
 			}
 		}
 		principal, _ := decimal.NewFromString(data.Principal)
+		if expenseID > 0 {
+			data.OriginalPrincipal = principal.Add(reduceCardRefunds).StringFixed(2)
+		} else {
+			data.OriginalPrincipal = data.Principal
+		}
 		if originDate == "" || principal.GreaterThan(available) {
 			return investmentError("分期本金不能超过原账单尚未分期的金额")
 		}
@@ -292,7 +416,7 @@ func (s *InvestmentService) SaveCreditInstallment(c core.Context, uid int64, inp
 		}
 		for _, p := range data.Payments {
 			if p.Date < originDate {
-				return investmentError("分期日期不能早于原账单")
+				return investmentError("分期日期不能早于原账单或关联退款日期")
 			}
 		}
 		book, e := Books.ResolveInSession(sess, uid, data.BookId, false)
@@ -464,8 +588,27 @@ func guardCreditInstallmentTransaction(sess *xorm.Session, tx, old *models.Trans
 			}
 		}
 	}
-	if !deleting && total.IsPositive() && total.GreaterThan(decimal.New(tx.Amount, -2)) {
-		return investmentError("账单金额不能小于已分期的本金")
+	if !deleting && total.IsPositive() {
+		available := decimal.New(tx.Amount, -2)
+		var refunds []models.Refund
+		if e := sess.Where("uid=? AND expense_id=? AND deleted=?", old.Uid, old.TransactionId, false).Find(&refunds); e != nil {
+			return e
+		}
+		for _, refund := range refunds {
+			if refund.InstallmentMode == "offset" {
+				continue
+			}
+			cash, e := refundCash(sess, old.Uid, &refund)
+			if e != nil {
+				return e
+			}
+			if cash.AccountId == old.AccountId {
+				available = available.Add(decimal.New(cash.Amount, -2))
+			}
+		}
+		if total.GreaterThan(available) {
+			return investmentError("账单金额扣除退回本卡的退款后不能小于已分期本金")
+		}
 	}
 	return nil
 }

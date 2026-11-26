@@ -1,9 +1,20 @@
 import axios from 'axios';
+import type { CryptoDCASetupInput } from '@/lib/crypto-dca.ts';
+import { formatAppError, type ErrorContext } from '@/lib/error-message.ts';
 import type { AccountDeletionTarget, AccountDeletionPreview } from '@/models/investment.ts';
 import type { HoldingProfile,HoldingSetup,InvestmentPlan,InvestmentOrder,InvestmentReport } from '@/models/investment.ts';
 import '@/lib/services.ts'; // Reuse the application's authentication, API root and token refresh.
 import type { ApiResponse } from '@/core/api.ts';
 import type { InvestmentAccount, Instrument, InstrumentBinding, InstrumentCandidate, InvestmentEvent, InvestmentSettings, InvestmentPosition, InvestmentPreview, InvestmentQuote, WealthSummary, WealthSnapshot, ConversionInput, InvestmentConversion } from '@/models/investment.ts';
+
+export interface FundDCAAlert {
+    cashAccountId: string;
+    cashAccountName: string;
+    balance: string;
+    required: string;
+    insufficientNow: boolean;
+    planNames: string[];
+}
 
 async function request<T>(method: 'get' | 'post', path: string, data?: unknown, key?: string, timeout?: number): Promise<T> {
     const response = await axios.request<ApiResponse<T> & { errorMessage?: string; error?: string }>({
@@ -24,14 +35,14 @@ export const investments = {
     saveOrder:(data:InvestmentOrder,key:string)=>request<InvestmentOrder>('post','investments/orders',data,key),
     confirmOrder:(data:{id:string;version:number;price:string;date:string})=>request<InvestmentPreview>('post','investments/orders/confirm',data),
     cancelOrder:(data:{id:string;version:number})=>request<boolean>('post','investments/orders/cancel',data),
-    syncPlans:(force=false)=>request<{created:number;pending:number}>('post','investments/plans/sync',{force},undefined,120000),
+    syncPlans:(force=false)=>request<{created:number;pending:number;alerts?:FundDCAAlert[]}>('post','investments/plans/sync',{force},undefined,120000),
     report:(accountId='',instrumentId='',bookIds?:string[])=>request<InvestmentReport>('get',`investments/report?${new URLSearchParams({accountId,instrumentId,...(bookIds?{assetScope:'1',bookIds:bookIds.join(',')}:{})})}`),
     previewAccountDeletion: (target: AccountDeletionTarget) => request<AccountDeletionPreview>('post', 'wealth/accounts/delete/preview', target),
     deleteAccount: (target: AccountDeletionTarget, token: string, deleteRelated: boolean) => request<AccountDeletionPreview>('post', 'wealth/accounts/delete', { ...target, token, deleteRelated }),
     accounts: () => request<InvestmentAccount[]>('get', 'investments/accounts'),
     createAccount: (name: string, kind: string) => request<InvestmentAccount>('post', 'investments/accounts', { name, kind }),
     updateAccount: (data:InvestmentAccount) => request<InvestmentAccount>('post','investments/accounts/update',data),
-    createCryptoAccount: (data: { name:string; kind:string; platform:string; bookId:string; currency?:string; paymentInstruments?:string[]; holdings:{instrumentId:string;quantity:string}[] }, key:string) => request<InvestmentAccount>('post', 'investments/accounts/crypto',data,key),
+    createCryptoAccount: (data: { name:string; kind:string; platform:string; bookId:string; currency?:string; paymentInstruments?:string[]; holdings:{instrumentId:string;quantity:string;cost?:string|null;costExchangeRate?:string}[]; dcaPlans?:CryptoDCASetupInput[] }, key:string) => request<InvestmentAccount>('post', 'investments/accounts/crypto',data,key),
     conversion: (data:ConversionInput) => request<InvestmentConversion>('post','investments/conversion',data,undefined,45000),
     instruments: () => request<Instrument[]>('get', 'investments/instruments'),
     createInstrument: (data: { name: string; symbol: string; type: string } & Partial<InstrumentBinding>) => request<Instrument>('post', 'investments/instruments', data),
@@ -55,7 +66,6 @@ export const investments = {
     export: () => request<string>('get', 'investments/export')
 };
 
-export function investmentError(error: unknown): string {
-    if (axios.isAxiosError(error)) return error.response?.data?.errorMessage || error.response?.data?.error || (error.response ? error.message : '无法连接服务器。请检查网络后重试，尚未确认入账。');
-    return error instanceof Error ? error.message : '操作失败，请重试';
+export function investmentError(error: unknown, context: ErrorContext = 'write'): string {
+    return formatAppError(error, context);
 }

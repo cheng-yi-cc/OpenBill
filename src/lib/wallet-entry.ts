@@ -8,9 +8,10 @@ export function currencyMoney(value: string | null | undefined, currency: string
 export function usdFX(summary?: WealthSummary) { return summary?.fxRates?.find(rate=>rate.base==='USD'&&rate.quote==='CNY'&&new Money(rate.rate||'0').gt(0)); }
 export function positionValue(position: InvestmentPosition | undefined, currency: string, summary?: WealthSummary): string | null {
     if (!position || new Money(position.quantity).isZero()) return '0';
-    if(currency==='CNY')return position.marketValue??null;
+    const marketValue=position.marketValue?.trim()||null;
+    if(currency==='CNY')return marketValue;
     if(position.quote?.currency==='USD'&&position.quote.price)return new Money(position.quantity).mul(position.quote.price).toFixed();
-    const fx=usdFX(summary);return position.marketValue!=null&&fx?new Money(position.marketValue).div(fx.rate).toFixed():null;
+    const fx=usdFX(summary);return marketValue!=null&&fx?new Money(marketValue).div(fx.rate).toFixed():null;
 }
 export function walletValue(positions: InvestmentPosition[],currency:string,summary?:WealthSummary):string|null {
     let total=new Money(0);

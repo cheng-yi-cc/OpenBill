@@ -86,6 +86,36 @@ func saveImportBatch(sess *xorm.Session, uid int64, batch *ImportBatch, transact
 	_, err = sess.Insert(&models.LocalLedgerItem{Id: importBatchKey(uid, batch.Id), Uid: uid, Kind: "import", Revision: 1, Payload: string(data), UpdatedUnixTime: batch.CreatedAt})
 	return err
 }
+
+// Clearing ledger facts must retain batch identities so a delayed retry cannot
+// import the same batch again after the original transactions were removed.
+func retireImportBatchesInSession(sess *xorm.Session, uid int64) error {
+	var rows []models.LocalLedgerItem
+	if err := sess.Where("uid=? AND kind=?", uid, "import").Find(&rows); err != nil {
+		return err
+	}
+	for _, row := range rows {
+		var data storedImportBatch
+		if err := json.Unmarshal([]byte(row.Payload), &data); err != nil {
+			return ErrLedgerItemInvalid
+		}
+		if data.Deleted {
+			continue
+		}
+		data.Deleted = true
+		raw, err := json.Marshal(data)
+		if err != nil {
+			return err
+		}
+		row.Payload = string(raw)
+		row.Revision++
+		row.UpdatedUnixTime = time.Now().Unix()
+		if _, err := sess.ID(row.Id).Where("uid=? AND kind=?", uid, "import").Cols("payload", "revision", "updated_unix_time").Update(&row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 func (s *LedgerWorkspaceService) UndoImportBatch(c core.Context, uid int64, id string) error {
 	if id == "" || len(id) > 64 {
 		return ErrLedgerItemInvalid

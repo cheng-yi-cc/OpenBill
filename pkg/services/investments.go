@@ -27,7 +27,7 @@ import (
 const InvestmentSettlementRole = "investment_settlement"
 
 var ErrInvestmentLinked = errs.NewNormalError(21, 1, 409, "此流水属于投资结算，请在资产页修订或撤销对应投资记录")
-var ErrInvestmentConflict = errs.NewNormalError(21, 2, 409, "记录已变更，或重复请求的内容不同，请刷新后重试")
+var ErrInvestmentConflict = errs.NewNormalError(21, 2, 409, "记录刚有变动，请刷新后重试")
 
 type InvestmentEvent struct {
 	investments.Event
@@ -88,7 +88,7 @@ func (s *InvestmentService) Settings(c core.Context, uid int64) (*models.Investm
 }
 func (s *InvestmentService) SaveSettings(c core.Context, uid int64, item models.InvestmentSettings) (*models.InvestmentSettings, error) {
 	if item.BaseCurrency != "CNY" {
-		return nil, investmentError("初版以人民币为本位币")
+		return nil, investmentError("当前仅支持以人民币作为记账本位币")
 	}
 	if _, err := time.LoadLocation(item.TimeZone); err != nil || item.TimeZone == "" {
 		return nil, investmentError("请选择有效的会计时区")
@@ -136,7 +136,7 @@ func investmentContext(c core.Context) context.Context {
 func (s *InvestmentService) SearchInstruments(c core.Context, query, market string) ([]marketquotes.Candidate, error) {
 	result, err := marketquotes.Default.Search(investmentContext(c), query, market)
 	if err != nil {
-		return nil, investmentError(err.Error())
+		return nil, investmentError(localizeMarketQuoteError(err))
 	}
 	return result, nil
 }
@@ -154,7 +154,7 @@ func (s *InvestmentService) BindInstrument(c core.Context, uid int64, id string,
 	}
 	confirmed, err := marketquotes.Default.Resolve(investmentContext(c), binding)
 	if err != nil {
-		return nil, investmentError(err.Error())
+		return nil, investmentError(localizeMarketQuoteError(err))
 	}
 	if item.Type != confirmed.Type && !(binding.Provider == "tencent" && (item.Type == "FUND" || item.Type == "STOCK") && (confirmed.Type == "FUND" || confirmed.Type == "STOCK")) {
 		return nil, investmentError("资产类型与所选行情不一致")
@@ -177,7 +177,7 @@ func (s *InvestmentService) CreateInstrument(c core.Context, uid int64, item mod
 	if item.Provider != "" || item.ProviderID != "" || item.Market != "" || item.Currency != "" {
 		confirmed, err := marketquotes.Default.Resolve(investmentContext(c), instrumentBinding(item))
 		if err != nil {
-			return nil, investmentError(err.Error())
+			return nil, investmentError(localizeMarketQuoteError(err))
 		}
 		if item.Type != confirmed.Type && !(confirmed.Provider == "tencent" && (item.Type == "STOCK" || item.Type == "FUND")) {
 			return nil, investmentError("资产类型与所选行情不一致")
@@ -244,9 +244,13 @@ func replayInvestments(events []InvestmentEvent) (*investments.Result, error) {
 	}
 	return investments.Replay(facts)
 }
-func (s *InvestmentService) validateEvent(sess *xorm.Session, uid int64, e *InvestmentEvent) error {
+func (s *InvestmentService) validateEvent(sess *xorm.Session, uid int64, e *InvestmentEvent, previous ...*InvestmentEvent) error {
 	if e.Type == investments.Income || e.Type == investments.Expense {
-		return s.validateWalletEntry(sess, uid, e)
+		var old *InvestmentEvent
+		if len(previous) > 0 {
+			old = previous[0]
+		}
+		return s.validateWalletEntry(sess, uid, e, old)
 	}
 	if e.Wallet != nil {
 		return investmentError("普通投资记录不能携带钱包收支信息")
@@ -332,7 +336,7 @@ func (s *InvestmentService) validateEvent(sess *xorm.Session, uid int64, e *Inve
 					continue
 				}
 				if err := investments.ValidateDecimal(v); err != nil {
-					return investmentError("结算金额必须为普通十进制字符串，最多 18 位小数")
+					return investmentError("结算金额请输入有效数字（最多 18 位小数）")
 				}
 				d, err := decimal.NewFromString(v)
 				if err != nil || d.Exponent() < -2 {
@@ -381,7 +385,7 @@ func (s *InvestmentService) mutateInvestmentInSession(c core.Context, sess *xorm
 		return nil, investmentError("定投来源信息只能由已启用的计划生成")
 	}
 	if !preview && operation == "create" && (len(key) < 8 || len(key) > 128) {
-		return nil, investmentError("请求缺少有效的 Idempotency-Key")
+		return nil, investmentError("页面状态已过期，请刷新后重试")
 	}
 	raw, _ := json.Marshal(input)
 	hash := sha256.Sum256(append([]byte(operation+":"), raw...))
@@ -433,6 +437,10 @@ func (s *InvestmentService) mutateInvestmentInSession(c core.Context, sess *xorm
 		}
 		index := -1
 		var old InvestmentEvent
+		var previousWalletTags []models.TransactionTagIndex
+		var walletTags []int64
+		var previousWalletPictures []models.TransactionPictureInfo
+		var walletPicIDs []int64
 		if operation != "create" {
 			for i, e := range events {
 				if e.ID == input.ID {
@@ -446,6 +454,16 @@ func (s *InvestmentService) mutateInvestmentInSession(c core.Context, sess *xorm
 			}
 			if old.Version != input.Version || old.Voided {
 				return ErrInvestmentConflict
+			}
+			if old.Wallet != nil {
+				previousWalletTags, err = walletTagIndexes(sess, uid, old.ID)
+				if err != nil {
+					return err
+				}
+				previousWalletPictures, err = walletPictureInfos(sess, uid, old.ID)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		if operation == "void" {
@@ -461,6 +479,25 @@ func (s *InvestmentService) mutateInvestmentInSession(c core.Context, sess *xorm
 				// The original observation remains in the previous audit revision.
 				input.Conversion = nil
 				input.DCA = old.DCA
+				// Older clients omit wallet display/reporting flags; preserve the
+				// existing fact rather than silently changing its accounting scope.
+				if input.Wallet != nil && old.Wallet != nil {
+					if input.Wallet.ExcludeFromStatistics == nil {
+						input.Wallet.ExcludeFromStatistics = old.Wallet.ExcludeFromStatistics
+					}
+					if input.Wallet.ExcludeFromBudget == nil {
+						input.Wallet.ExcludeFromBudget = old.Wallet.ExcludeFromBudget
+					}
+					if input.Wallet.HideAmount == nil {
+						input.Wallet.HideAmount = old.Wallet.HideAmount
+					}
+					if input.Wallet.LocationName == nil {
+						input.Wallet.LocationName = old.Wallet.LocationName
+					}
+					if input.Wallet.DiscountAmount == nil {
+						input.Wallet.DiscountAmount = old.Wallet.DiscountAmount
+					}
+				}
 				if input.Fund != nil {
 					input.Fund.Source = "手动修订"
 				}
@@ -479,8 +516,24 @@ func (s *InvestmentService) mutateInvestmentInSession(c core.Context, sess *xorm
 			if err != nil {
 				return err
 			}
-			if err = s.validateEvent(sess, uid, &input); err != nil {
+			var previous *InvestmentEvent
+			if index >= 0 {
+				previous = &old
+			}
+			if err = s.validateEvent(sess, uid, &input, previous); err != nil {
 				return err
+			}
+			if input.Wallet != nil {
+				walletTags, err = walletTagIDs(input.Wallet, previousWalletTags)
+				if err != nil {
+					return err
+				}
+				var walletPics models.TransactionPictureInfoBasicResponseSlice
+				walletPicIDs, walletPics, err = walletPictureIDs(sess, uid, input.Wallet, previousWalletPictures)
+				if err != nil {
+					return err
+				}
+				input.Wallet.Pictures = walletPics
 			}
 		}
 		if index < 0 {
@@ -493,13 +546,36 @@ func (s *InvestmentService) mutateInvestmentInSession(c core.Context, sess *xorm
 		}
 		result, err := replayInvestments(events)
 		if err != nil {
-			return investmentError(err.Error())
+			return investmentError(localizeReplayError(sess, uid, err))
 		}
 		response = &InvestmentPreview{Event: input, Positions: result.Positions, Effects: result.Effects}
 		// Preview executes settlement in a rolled-back transaction too, so balance limits are checked.
 		if index >= 0 {
 			if err = s.reverseSettlement(sess, uid, old.ID); err != nil {
 				return err
+			}
+			for _, tag := range previousWalletTags {
+				n, updateErr := sess.ID(tag.TagIndexId).Where("uid=? AND transaction_id=? AND deleted=?", uid, tag.TransactionId, false).
+					Cols("deleted", "deleted_unix_time").Update(&models.TransactionTagIndex{Deleted: true, DeletedUnixTime: time.Now().Unix()})
+				if updateErr != nil {
+					return updateErr
+				}
+				if n != 1 {
+					return ErrInvestmentConflict
+				}
+			}
+			if input.Voided && len(previousWalletPictures) > 0 {
+				now := time.Now().Unix()
+				for _, pic := range previousWalletPictures {
+					n, updateErr := sess.ID(pic.PictureId).Where("uid=? AND transaction_id=? AND deleted=?", uid, pic.TransactionId, false).
+						Cols("deleted", "deleted_unix_time").Update(&models.TransactionPictureInfo{Deleted: true, DeletedUnixTime: now})
+					if updateErr != nil {
+						return updateErr
+					}
+					if n != 1 {
+						return ErrInvestmentConflict
+					}
+				}
 			}
 		}
 		if !input.Voided && (input.Type == "BUY" || input.Type == "SELL") && input.SettlementInstrumentID == "" {
@@ -516,14 +592,14 @@ func (s *InvestmentService) mutateInvestmentInSession(c core.Context, sess *xorm
 		}
 		if preview {
 			if !input.Voided && input.Wallet != nil {
-				if err = s.settleWallet(c, sess, uid, input, settings.TimeZone); err != nil {
+				if err = s.settleWallet(c, sess, uid, input, settings.TimeZone, walletTags, previousWalletTags, walletPicIDs, previousWalletPictures); err != nil {
 					return err
 				}
 			}
 			return errInvestmentPreviewRollback
 		}
 		if !input.Voided && input.Wallet != nil {
-			if err = s.settleWallet(c, sess, uid, input, settings.TimeZone); err != nil {
+			if err = s.settleWallet(c, sess, uid, input, settings.TimeZone, walletTags, previousWalletTags, walletPicIDs, previousWalletPictures); err != nil {
 				return err
 			}
 		}
@@ -627,6 +703,9 @@ func (s *InvestmentService) reverseSettlement(sess *xorm.Session, uid int64, eve
 		return err
 	}
 	for _, tx := range txs {
+		if err := guardMonetaryFlowHistory(sess, uid, &tx, nil); err != nil {
+			return err
+		}
 		delta := tx.Amount
 		if tx.Type == models.TRANSACTION_DB_TYPE_TRANSFER_IN || tx.Type == models.TRANSACTION_DB_TYPE_INCOME {
 			delta = -delta
@@ -672,11 +751,26 @@ func InvalidateWealthSnapshots(sess *xorm.Session, uid, from int64) error {
 
 // Guard all legacy mutation paths, including batch APIs and data clearing.
 func guardInvestmentTransactions(sess *xorm.Session, uid int64, ids []int64, allowTransferFees ...bool) error {
+	var refundErr error
+	if len(allowTransferFees) > 1 && allowTransferFees[1] {
+		refundErr = guardRefundCashTransactions(sess, uid, ids)
+	} else {
+		refundErr = guardRefundTransactions(sess, uid, ids)
+	}
+	if refundErr != nil {
+		return refundErr
+	}
 	if len(allowTransferFees) == 0 || !allowTransferFees[0] {
 		if err := guardTransferFeeMutation(sess, uid, ids); err != nil {
 			return err
 		}
 	}
+	return guardInvestmentEventTransactions(sess, uid, ids)
+}
+
+// guardInvestmentEventTransactions checks investment links when a caller has
+// already validated every other relationship it is allowed to handle.
+func guardInvestmentEventTransactions(sess *xorm.Session, uid int64, ids []int64) error {
 	query := sess.Where("uid=? AND investment_event_id<>? AND deleted=?", uid, "", false)
 	if len(ids) > 0 {
 		query = query.In("transaction_id", ids)

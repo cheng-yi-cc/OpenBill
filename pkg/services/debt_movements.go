@@ -68,7 +68,7 @@ func (s *InvestmentService) RecordDebtMovement(c core.Context, uid int64, input 
 		}
 		if has {
 			if existing.Digest != row.Digest {
-				return investmentError("请求内容已变化，请重试")
+				return investmentError("页面状态已过期，请刷新后重试")
 			}
 			*row = existing
 			return nil

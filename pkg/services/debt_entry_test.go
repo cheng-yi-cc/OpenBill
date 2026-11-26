@@ -97,3 +97,59 @@ func TestDebtEntryInstallmentsKeepPrincipalTagsAndIncomeSeparate(t *testing.T) {
 		require.Zero(t, total.Sign())
 	}
 }
+
+func TestAccountClearCleansDebtInterestAndCalendarGuard(t *testing.T) {
+	f := newInvestmentDBFixture(t)
+	_, err := f.engine.Insert(&models.Account{AccountId: 8602, Uid: f.uid, Name: "清账测试借款", Type: models.ACCOUNT_TYPE_SINGLE_ACCOUNT, Category: models.ACCOUNT_CATEGORY_DEBT, Currency: "CNY"})
+	require.NoError(t, err)
+	require.NoError(t, TransactionCategories.EnsurePersonalCategories(nil, f.uid))
+	var transferCat models.TransactionCategory
+	_, err = f.engine.Where("uid=? AND type=? AND parent_category_id>0", f.uid, models.CATEGORY_TYPE_TRANSFER).Get(&transferCat)
+	require.NoError(t, err)
+	borrowTx := &models.Transaction{
+		Uid: f.uid, BookId: DefaultBookID(f.uid), Type: models.TRANSACTION_DB_TYPE_TRANSFER_OUT,
+		CategoryId: transferCat.CategoryId, AccountId: 8602, RelatedAccountId: f.bankID,
+		Amount: 50000, RelatedAccountAmount: 50000,
+		TransactionTime: utils.GetMinTransactionTimeFromUnixTime(f.at - 10), DebtDueDate: "2027-03-01",
+	}
+	require.NoError(t, Transactions.CreateTransaction(nil, borrowTx, nil, nil))
+	dueID := fmt.Sprintf("debt-transaction-%d", borrowTx.TransactionId)
+	var event models.CalendarEvent
+	has, err := f.engine.ID(dueID).Get(&event)
+	require.NoError(t, err)
+	require.True(t, has)
+
+	// Guard: standalone Calendar.Save / Delete must reject linked debt event
+	_, err = Calendar.Save(nil, f.uid, models.CalendarSaveRequest{
+		Id: dueID, BookId: event.BookId, AccountId: event.AccountId, Kind: "repayment", Date: "2027-04-01", Amount: "500.00",
+	})
+	require.Error(t, err)
+	_, err = Calendar.Delete(nil, f.uid, dueID)
+	require.Error(t, err)
+
+	// Record repayment with interest on bank account
+	row, err := Investments.RecordDebtMovement(nil, f.uid, DebtMovementInput{
+		DebtAccountId: "8602", CashAccountId: fmt.Sprint(f.bankID), Action: "repay",
+		Principal: "100", Interest: "15", Time: f.at + 1, TimeZone: "Asia/Shanghai", RequestId: "debt-clear-001",
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(2038500), f.balance())
+
+	// Clear debt account must remove principal transfer, linked interest tx on bank account, and debt calendar event, restoring bank balance and keeping tombstone
+	require.NoError(t, Transactions.DeleteAllTransactionsOfAccount(nil, f.uid, 8602, 100))
+	require.Equal(t, int64(2000000), f.balance())
+	var debtAcc models.Account
+	_, err = f.engine.ID(8602).Get(&debtAcc)
+	require.NoError(t, err)
+	require.Zero(t, debtAcc.Balance)
+
+	interestActive, err := f.engine.ID(row.InterestTransactionId).Where("deleted=?", false).Exist(&models.Transaction{})
+	require.NoError(t, err)
+	require.False(t, interestActive)
+	has, err = f.engine.ID(dueID).Exist(&models.CalendarEvent{})
+	require.NoError(t, err)
+	require.False(t, has)
+	tombstoneExists, err := f.engine.ID(row.Id).Exist(&models.DebtMovement{})
+	require.NoError(t, err)
+	require.True(t, tombstoneExists)
+}

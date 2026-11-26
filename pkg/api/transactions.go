@@ -606,6 +606,7 @@ func (a *TransactionsApi) TransactionStatisticsHandler(c *core.WebContext) (any,
 			CategoryId:  totalAmountItem.CategoryId,
 			AccountId:   totalAmountItem.AccountId,
 			TotalAmount: totalAmountItem.Amount.String(),
+			Currency:    totalAmountItem.Currency, Unassigned: totalAmountItem.Unassigned,
 		}
 
 		if totalAmountItem.Type == models.TRANSACTION_DB_TYPE_TRANSFER_OUT || totalAmountItem.Type == models.TRANSACTION_DB_TYPE_TRANSFER_IN {
@@ -680,6 +681,7 @@ func (a *TransactionsApi) TransactionStatisticsTrendsHandler(c *core.WebContext)
 				CategoryId:  totalAmountItem.CategoryId,
 				AccountId:   totalAmountItem.AccountId,
 				TotalAmount: totalAmountItem.Amount.String(),
+				Currency:    totalAmountItem.Currency, Unassigned: totalAmountItem.Unassigned,
 			}
 
 			if totalAmountItem.Type == models.TRANSACTION_DB_TYPE_TRANSFER_OUT || totalAmountItem.Type == models.TRANSACTION_DB_TYPE_TRANSFER_IN {
@@ -885,6 +887,20 @@ func (a *TransactionsApi) TransactionAmountsHandler(c *core.WebContext) (any, *e
 			totalAmounts.ExpenseAmount.Add(totalAmounts.ExpenseAmount, expenseAmount)
 			amountsMap[account.Currency] = totalAmounts
 		}
+		unassigned, err := services.Investments.RefundUnassignedDailyIncome(queryContext, uid, requestItem.StartTime, requestItem.EndTime, excludeCategoryIds, clientTimezone, transactionAmountsReq.UseTransactionTimezone)
+		if err != nil {
+			return nil, errs.Or(err, errs.ErrOperationFailed)
+		}
+		for _, daily := range unassigned {
+			for currency, amount := range daily {
+				total := amountsMap[currency]
+				if total == nil {
+					total = &models.TransactionAmountsAndCurrency{Currency: currency, IncomeAmount: big.NewInt(0), ExpenseAmount: big.NewInt(0)}
+					amountsMap[currency] = total
+				}
+				total.IncomeAmount.Add(total.IncomeAmount, amount)
+			}
+		}
 
 		allTotalAmounts := make(models.TransactionAmountsResponseItemAmountInfoSlice, 0)
 
@@ -967,6 +983,10 @@ func (a *TransactionsApi) TransactionDailyAmountsHandler(c *core.WebContext) (an
 		log.Errorf(c, "[transactions.TransactionDailyAmountsHandler] failed to get daily amounts for user \"uid:%d\", because %s", uid, err.Error())
 		return nil, errs.Or(err, errs.ErrOperationFailed)
 	}
+	unassigned, err := services.Investments.RefundUnassignedDailyIncome(queryContext, uid, transactionAmountsReq.StartTime, transactionAmountsReq.EndTime, excludeCategoryIds, clientTimezone, transactionAmountsReq.UseTransactionTimezone)
+	if err != nil {
+		return nil, errs.Or(err, errs.ErrOperationFailed)
+	}
 
 	allDates := make(map[int32]bool)
 
@@ -975,6 +995,9 @@ func (a *TransactionsApi) TransactionDailyAmountsHandler(c *core.WebContext) (an
 	}
 
 	for date := range expenseAmounts {
+		allDates[date] = true
+	}
+	for date := range unassigned {
 		allDates[date] = true
 	}
 
@@ -1033,6 +1056,14 @@ func (a *TransactionsApi) TransactionDailyAmountsHandler(c *core.WebContext) (an
 
 			totalAmounts.ExpenseAmount.Add(totalAmounts.ExpenseAmount, amount)
 			amountsByCurrency[account.Currency] = totalAmounts
+		}
+		for currency, amount := range unassigned[date] {
+			total := amountsByCurrency[currency]
+			if total == nil {
+				total = &models.TransactionAmountsAndCurrency{Currency: currency, IncomeAmount: big.NewInt(0), ExpenseAmount: big.NewInt(0)}
+				amountsByCurrency[currency] = total
+			}
+			total.IncomeAmount.Add(total.IncomeAmount, amount)
 		}
 
 		dailyTotalAmounts := make(models.TransactionAmountsResponseItemAmountInfoSlice, 0, len(amountsByCurrency))
@@ -1158,6 +1189,16 @@ func (a *TransactionsApi) TransactionGetHandler(c *core.WebContext) (any, *errs.
 	transactionEditable := transaction.IsEditable(user, clientTimezone, accountMap[transaction.AccountId], accountMap[transaction.RelatedAccountId])
 	transactionTagIds := allTransactionTagIds[transaction.TransactionId]
 	transactionResp := transaction.ToTransactionInfoResponse(transactionTagIds, transactionEditable)
+	refunds, err := services.Investments.RefundProjections(c, uid, []int64{transaction.TransactionId})
+	if err != nil {
+		return nil, errs.Or(err, errs.ErrOperationFailed)
+	}
+	if projection, ok := refunds[transaction.TransactionId]; ok {
+		transactionResp.Refund = &projection
+		if projection.Kind == "cash" {
+			transactionResp.Editable = false // cash movements use the refund workflow
+		}
+	}
 	transactionResp.MonetaryIncome, err = services.MonetaryIncome.TransactionDetail(c, uid, transaction.TransactionId)
 	if err != nil {
 		return nil, errs.Or(err, errs.ErrOperationFailed)
@@ -1168,6 +1209,14 @@ func (a *TransactionsApi) TransactionGetHandler(c *core.WebContext) (any, *errs.
 			return nil, errs.Or(err, errs.ErrOperationFailed)
 		}
 		transactionResp.Wallet = wallets[transaction.InvestmentEventId]
+		if transaction.Type == models.TRANSACTION_DB_TYPE_TRANSFER_OUT || transaction.Type == models.TRANSACTION_DB_TYPE_TRANSFER_IN {
+			metadata, metadataErr := services.Investments.InvestmentSettlementDetails(c, uid, []string{transaction.InvestmentEventId})
+			if metadataErr != nil {
+				log.Warnf(c, "[transactions.TransactionGetHandler] investment display metadata unavailable for user uid:%d: %s", uid, metadataErr.Error())
+			} else {
+				transactionResp.InvestmentSettlement = metadata[transaction.InvestmentEventId]
+			}
+		}
 	}
 
 	if !transactionGetReq.TrimAccount {
@@ -1452,8 +1501,10 @@ func (a *TransactionsApi) TransactionModifyHandler(c *core.WebContext) (any, *er
 		BookId: transactionModifyReq.BookId, TransactionId: transaction.TransactionId,
 		TransferFeeAmount: transaction.TransferFeeAmount, TransferFeeCategoryId: transaction.TransferFeeCategoryId,
 		DebtDueDate: transaction.DebtDueDate, LocationName: transaction.LocationName,
+		LocationAddress: transaction.LocationAddress, LinkedTransactionIds: transaction.LinkedTransactionIds,
 		DiscountAmount:         transaction.DiscountAmount,
 		ExcludeFromStatistics:  transaction.ExcludeFromStatistics,
+		BudgetExclusionMode:    transaction.BudgetExclusionMode,
 		ReimbursementAccountId: transaction.ReimbursementAccountId,
 		ReimbursementClosedAt:  transaction.ReimbursementClosedAt,
 		ReimbursementReceiptId: transaction.ReimbursementReceiptId,
@@ -1480,12 +1531,19 @@ func (a *TransactionsApi) TransactionModifyHandler(c *core.WebContext) (any, *er
 	if transactionModifyReq.LocationName != nil {
 		newTransaction.LocationName = *transactionModifyReq.LocationName
 	}
+	if transactionModifyReq.LocationAddress != nil {
+		newTransaction.LocationAddress = *transactionModifyReq.LocationAddress
+	}
+	if transactionModifyReq.LinkedTransactionIds != nil {
+		newTransaction.LinkedTransactionIds = *transactionModifyReq.LinkedTransactionIds
+	}
 	if transactionModifyReq.DiscountAmount != nil {
 		newTransaction.DiscountAmount = *transactionModifyReq.DiscountAmount
 	}
 	if transactionModifyReq.ExcludeFromStatistics != nil {
 		newTransaction.ExcludeFromStatistics = *transactionModifyReq.ExcludeFromStatistics
 	}
+	newTransaction.SetBudgetExclusion(transactionModifyReq.ExcludeFromBudget)
 	if transactionModifyReq.ReimbursementAccountId != nil {
 		newTransaction.ReimbursementAccountId = *transactionModifyReq.ReimbursementAccountId
 	}
@@ -1502,11 +1560,12 @@ func (a *TransactionsApi) TransactionModifyHandler(c *core.WebContext) (any, *er
 	if newTransaction.BookId == "" {
 		newTransaction.BookId = transaction.BookId
 	}
-	if newTransaction.BookId == transaction.BookId &&
+	if transactionModifyReq.LocationAddress == nil && transactionModifyReq.LinkedTransactionIds == nil && newTransaction.BookId == transaction.BookId &&
 		newTransaction.TransferFeeAmount == transaction.TransferFeeAmount && newTransaction.TransferFeeCategoryId == transaction.TransferFeeCategoryId &&
 		newTransaction.DebtDueDate == transaction.DebtDueDate && newTransaction.LocationName == transaction.LocationName &&
 		newTransaction.DiscountAmount == transaction.DiscountAmount &&
 		newTransaction.ExcludeFromStatistics == transaction.ExcludeFromStatistics &&
+		newTransaction.BudgetExclusionMode == transaction.BudgetExclusionMode &&
 		newTransaction.ReimbursementAccountId == transaction.ReimbursementAccountId &&
 		newTransaction.Type == transaction.Type &&
 		newTransaction.CategoryId == transaction.CategoryId &&
@@ -1586,7 +1645,15 @@ func (a *TransactionsApi) TransactionModifyHandler(c *core.WebContext) (any, *er
 		}
 	}
 
-	err = a.transactions.ModifyTransaction(c, newTransaction, changeToTransfer, len(transactionTagIds), addTransactionTagIds, removeTransactionTagIds, addTransactionPictureIds, removeTransactionPictureIds)
+	refunds, err := services.Investments.RefundProjections(c, uid, []int64{transaction.TransactionId})
+	if err != nil {
+		return nil, errs.Or(err, errs.ErrOperationFailed)
+	}
+	if projection, ok := refunds[transaction.TransactionId]; ok && projection.Kind == "expense" {
+		err = a.transactions.ModifyRefundExpense(c, services.RefundActor{User: user, ClientTimezone: clientTimezone}, newTransaction, len(transactionTagIds), addTransactionTagIds, removeTransactionTagIds, addTransactionPictureIds, removeTransactionPictureIds)
+	} else {
+		err = a.transactions.ModifyTransaction(c, newTransaction, changeToTransfer, len(transactionTagIds), addTransactionTagIds, removeTransactionTagIds, addTransactionPictureIds, removeTransactionPictureIds)
+	}
 
 	if err != nil {
 		log.Errorf(c, "[transactions.TransactionModifyHandler] failed to update transaction \"id:%d\" for user \"uid:%d\", because %s", transactionModifyReq.Id, uid, err.Error())
@@ -1596,6 +1663,15 @@ func (a *TransactionsApi) TransactionModifyHandler(c *core.WebContext) (any, *er
 	log.Infof(c, "[transactions.TransactionModifyHandler] user \"uid:%d\" has updated transaction \"id:%d\" successfully", uid, transactionModifyReq.Id)
 
 	newTransactionResp := newTransaction.ToTransactionInfoResponse(tagIds, transactionEditable)
+	if len(refunds) > 0 {
+		updated, err := services.Investments.RefundProjections(c, uid, []int64{transaction.TransactionId})
+		if err != nil {
+			return nil, errs.Or(err, errs.ErrOperationFailed)
+		}
+		if projection, ok := updated[transaction.TransactionId]; ok {
+			newTransactionResp.Refund = &projection
+		}
+	}
 	newTransactionResp.Pictures = a.GetTransactionPictureInfoResponseList(newPictureInfos)
 
 	return newTransactionResp, nil
@@ -2332,7 +2408,15 @@ func (a *TransactionsApi) TransactionDeleteHandler(c *core.WebContext) (any, *er
 		return nil, errs.ErrCannotDeleteTransactionWithThisTransactionTime
 	}
 
-	err = a.transactions.DeleteTransaction(c, uid, transactionDeleteReq.Id)
+	refunds, err := services.Investments.RefundProjections(c, uid, []int64{transactionDeleteReq.Id})
+	if err != nil {
+		return nil, errs.Or(err, errs.ErrOperationFailed)
+	}
+	if projection, ok := refunds[transactionDeleteReq.Id]; ok && projection.Kind == "expense" {
+		err = services.Investments.DeleteExpenseAndRefunds(c, uid, services.RefundActor{User: user, ClientTimezone: clientTimezone}, transactionDeleteReq.Id)
+	} else {
+		err = a.transactions.DeleteTransaction(c, uid, transactionDeleteReq.Id)
+	}
 
 	if err != nil {
 		log.Errorf(c, "[transactions.TransactionDeleteHandler] failed to delete transaction \"id:%d\" for user \"uid:%d\", because %s", transactionDeleteReq.Id, uid, err.Error())
@@ -3176,12 +3260,24 @@ func (a *TransactionsApi) getTransactionUsedAccounts(c *core.WebContext, uid int
 func (a *TransactionsApi) getTransactionResponseListResult(c *core.WebContext, user *models.User, transactions []*models.Transaction, allAccounts map[int64]*models.Account, categoryMap map[int64]*models.TransactionCategory, tagMap map[int64]*models.TransactionTag, allTransactionTagIds map[int64][]int64, pictureInfoMap map[int64][]*models.TransactionPictureInfo, clientTimezone *time.Location, withPictures bool, trimAccount bool, trimCategory bool, trimTag bool) (models.TransactionInfoResponseSlice, error) {
 	result := make(models.TransactionInfoResponseSlice, len(transactions))
 	eventIDs := []string{}
+	settlementIDs := []string{}
 	for _, tx := range transactions {
 		if tx.InvestmentEventId != "" && (tx.Type == models.TRANSACTION_DB_TYPE_INCOME || tx.Type == models.TRANSACTION_DB_TYPE_EXPENSE) {
 			eventIDs = append(eventIDs, tx.InvestmentEventId)
 		}
+		if tx.InvestmentEventId != "" && (tx.Type == models.TRANSACTION_DB_TYPE_TRANSFER_IN || tx.Type == models.TRANSACTION_DB_TYPE_TRANSFER_OUT) {
+			settlementIDs = append(settlementIDs, tx.InvestmentEventId)
+		}
 	}
 	wallets, err := services.Investments.WalletTransactionDetails(c, user.Uid, eventIDs)
+	if err != nil {
+		return nil, err
+	}
+	settlements, metadataErr := services.Investments.InvestmentSettlementDetails(c, user.Uid, settlementIDs)
+	if metadataErr != nil {
+		log.Warnf(c, "[transactions.getTransactionResponseListResult] investment display metadata unavailable for user uid:%d: %s", user.Uid, metadataErr.Error())
+	}
+	refunds, err := services.Investments.RefundProjections(c, user.Uid, a.transactions.GetTransactionIds(transactions))
 	if err != nil {
 		return nil, err
 	}
@@ -3197,6 +3293,13 @@ func (a *TransactionsApi) getTransactionResponseListResult(c *core.WebContext, u
 		transactionTagIds := allTransactionTagIds[transaction.TransactionId]
 		result[i] = transaction.ToTransactionInfoResponse(transactionTagIds, transactionEditable)
 		result[i].Wallet = wallets[transaction.InvestmentEventId]
+		result[i].InvestmentSettlement = settlements[transaction.InvestmentEventId]
+		if projection, ok := refunds[transaction.TransactionId]; ok {
+			result[i].Refund = &projection
+			if projection.Kind == "cash" {
+				result[i].Editable = false
+			}
+		}
 
 		if !trimAccount {
 			if sourceAccount := allAccounts[transaction.AccountId]; sourceAccount != nil {
@@ -3249,6 +3352,7 @@ func (a *TransactionsApi) createNewTransactionModel(uid int64, transactionCreate
 		BookId:            transactionCreateReq.BookId,
 		TransferFeeAmount: transactionCreateReq.TransferFeeAmount, TransferFeeCategoryId: transactionCreateReq.TransferFeeCategoryId,
 		DebtDueDate: transactionCreateReq.DebtDueDate, LocationName: transactionCreateReq.LocationName,
+		LocationAddress: transactionCreateReq.LocationAddress, LinkedTransactionIds: transactionCreateReq.LinkedTransactionIds,
 		DiscountAmount:         transactionCreateReq.DiscountAmount,
 		Uid:                    uid,
 		Type:                   transactionDbType,
@@ -3263,6 +3367,7 @@ func (a *TransactionsApi) createNewTransactionModel(uid int64, transactionCreate
 		Comment:                transactionCreateReq.Comment,
 		CreatedIp:              clientIp,
 	}
+	transaction.SetBudgetExclusion(transactionCreateReq.ExcludeFromBudget)
 
 	if transactionCreateReq.Type == models.TRANSACTION_TYPE_TRANSFER {
 		transaction.RelatedAccountId = transactionCreateReq.DestinationAccountId

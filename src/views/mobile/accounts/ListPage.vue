@@ -239,7 +239,7 @@ import { useI18n } from '@/locales/helpers.ts';
 import { useI18nUIComponents, showLoading, hideLoading } from '@/lib/ui/mobile.ts';
 import { useAccountListPageBase } from '@/views/base/accounts/AccountListPageBase.ts';
 
-import { useRootStore } from '@/stores/index.ts';
+
 import { useSettingsStore } from '@/stores/setting.ts';
 import { useAccountsStore } from '@/stores/account.ts';
 
@@ -247,6 +247,7 @@ import { TextDirection } from '@/core/text.ts';
 import { AccountType, AccountCategory, CreditCardAmountDisplayType } from '@/core/account.ts';
 import type { Account, AccountShowingIds } from '@/models/account.ts';
 
+import { clearSingleAccountTransactions, isPasswordlessUser } from '@/lib/account-clear.ts';
 import { getCurrentUnixTime } from '@/lib/datetime.ts';
 import { getAccountIconType } from '@/lib/icon.ts';
 import { onSwipeoutDeleted } from '@/lib/ui/mobile.ts';
@@ -273,7 +274,6 @@ const {
     accountBalanceOrAvailableCredit
 } = useAccountListPageBase();
 
-const rootStore = useRootStore();
 const settingsStore = useSettingsStore();
 const accountsStore = useAccountsStore();
 
@@ -429,7 +429,7 @@ function moveAllTransactions(account: Account | null): void {
     accountForMoreActionSheet.value = null;
 }
 
-function showPasswordSheetForClearAllTransaction(account: Account | null): void {
+async function showPasswordSheetForClearAllTransaction(account: Account | null): Promise<void> {
     if (!account) {
         showAlert('An error occurred');
         return;
@@ -437,9 +437,21 @@ function showPasswordSheetForClearAllTransaction(account: Account | null): void 
 
     accountToClearTransactions.value = account;
     currentPasswordForClearData.value = '';
-    showInputPasswordSheetForClearAllTransactions.value = true;
     showAccountMoreActionSheet.value = false;
     accountForMoreActionSheet.value = null;
+
+    try {
+        if (await isPasswordlessUser()) {
+            showConfirm(tt('format.misc.clearTransactionsInAccountTip', { account: account.name }), () => {
+                clearAllTransactions('');
+            });
+            return;
+        }
+    } catch {
+        // Fallback to password input sheet when profile check is unavailable
+    }
+
+    showInputPasswordSheetForClearAllTransactions.value = true;
 }
 
 function clearAllTransactions(password: string): void {
@@ -451,16 +463,14 @@ function clearAllTransactions(password: string): void {
     clearingData.value = true;
     showLoading(() => clearingData.value);
 
-    rootStore.clearAllUserTransactionsOfAccount({
-        accountId: accountToClearTransactions.value.id,
-        password: password
-    }).then(() => {
+    clearSingleAccountTransactions(accountToClearTransactions.value.id, password).then(() => {
         clearingData.value = false;
         currentPasswordForClearData.value = '';
         hideLoading();
 
         showInputPasswordSheetForClearAllTransactions.value = false;
         showToast('All transactions in this account have been cleared');
+        reload();
     }).catch(error => {
         clearingData.value = false;
         hideLoading();

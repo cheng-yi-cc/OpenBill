@@ -239,7 +239,7 @@ func (s *InvestmentService) SaveHoldingProfile(c core.Context, uid int64, p mode
 // 一次新增直接保存资产、账户、展示规则和期初事实，任一失败整体回滚。
 func (s *InvestmentService) SetupHolding(c core.Context, uid int64, input HoldingSetupInput, key string) (*models.InvestmentHoldingProfile, error) {
 	if uid <= 0 || len(key) < 8 || len(key) > 128 {
-		return nil, investmentError("请求缺少有效的 Idempotency-Key")
+		return nil, investmentError("页面状态已过期，请刷新后重试")
 	}
 	raw, _ := json.Marshal(input)
 	hash := sha256.Sum256(append([]byte("holding:"), raw...))
@@ -257,7 +257,7 @@ func (s *InvestmentService) SetupHolding(c core.Context, uid int64, input Holdin
 		if asset.Provider != "" || asset.ProviderID != "" || asset.Market != "" {
 			confirmed, err := marketquotes.Default.Resolve(investmentContext(c), instrumentBinding(asset))
 			if err != nil {
-				return nil, investmentError(err.Error())
+				return nil, investmentError(localizeMarketQuoteError(err))
 			}
 			if asset.Type != confirmed.Type && !(asset.Provider == "tencent" && (asset.Type == "STOCK" || asset.Type == "FUND")) {
 				return nil, investmentError("资产类型与行情不一致")

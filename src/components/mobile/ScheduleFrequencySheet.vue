@@ -7,7 +7,7 @@
                 <f7-link sheet-close icon-f7="xmark" :aria-label="tt('Close')"></f7-link>
             </div>
             <div class="right">
-                <f7-button round fill icon-f7="checkmark_alt" :aria-label="tt('Apply')" @click="save"></f7-button>
+                <f7-button round fill icon-f7="checkmark_alt" :class="{ disabled: !canApply }" :aria-label="tt('Apply')" @click="save"></f7-button>
             </div>
         </f7-toolbar>
         <f7-page-content class="margin-top">
@@ -73,18 +73,22 @@
                                           @change="changeFrequencyValue">
                             </f7-list-item>
                         </f7-list>
-                        <f7-list dividers class="schedule-frequency-value-list no-margin-vertical"
-                                 v-if="currentFrequencyType === ScheduledTemplateFrequencyType.Yearly.type">
-                            <f7-list-item checkbox
-                                          :class="isChecked(monthAndDay.type) ? 'list-item-selected' : ''"
-                                          :key="monthAndDay.type"
-                                          :value="monthAndDay.type"
-                                          :checked="isChecked(monthAndDay.type)"
-                                          :title="monthAndDay.displayName"
-                                          v-for="monthAndDay in allAvailableMonthAndDays"
-                                          @change="changeFrequencyValue">
-                            </f7-list-item>
-                        </f7-list>
+                        <div class="schedule-yearly-picker" v-if="currentFrequencyType === ScheduledTemplateFrequencyType.Yearly.type">
+                            <div class="yearly-months">
+                                <button v-for="m in 12" :key="m" type="button" :class="{ active: yearlyMonth === m }" @click="yearlyMonth = m">{{ m }}月</button>
+                            </div>
+                            <f7-list dividers class="schedule-frequency-value-list no-margin-vertical">
+                                <f7-list-item checkbox
+                                              :class="isChecked(monthAndDay.type) ? 'list-item-selected' : ''"
+                                              :key="monthAndDay.type"
+                                              :value="monthAndDay.type"
+                                              :checked="isChecked(monthAndDay.type)"
+                                              :title="monthAndDay.displayName"
+                                              v-for="monthAndDay in yearlyDaysInSelectedMonth"
+                                              @change="changeFrequencyValue">
+                                </f7-list-item>
+                            </f7-list>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -105,7 +109,7 @@ import { type WeekDayValue } from '@/core/datetime.ts';
 import { ScheduledTemplateFrequencyType } from '@/core/template.ts';
 import { sortNumbersArray } from '@/lib/common.ts';
 import { scrollToSelectedItem } from '@/lib/ui/common.ts';
-import { type Framework7Dom } from '@/lib/ui/mobile.ts';
+import { type Framework7Dom, useI18nUIComponents } from '@/lib/ui/mobile.ts';
 
 interface MobileScheduleFrequencySelectionProps extends CommonScheduleFrequencySelectionProps {
     show: boolean;
@@ -119,6 +123,7 @@ const emit = defineEmits<{
 }>();
 
 const { tt } = useI18n();
+const { showToast } = useI18nUIComponents();
 const {
     allTransactionScheduledFrequencyTypes,
     allWeekDays,
@@ -132,6 +137,9 @@ const userStore = useUserStore();
 
 const currentFrequencyType = ref<number>(props.type);
 const currentFrequencyValue = ref<number[]>(getFrequencyValues(props.modelValue));
+const yearlyMonth = ref<number>(1);
+const yearlyDaysInSelectedMonth = computed(() => allAvailableMonthAndDays.value.filter(item => Math.floor(item.type / 100) === yearlyMonth.value));
+const canApply = computed(() => currentFrequencyType.value === ScheduledTemplateFrequencyType.Disabled.type || currentFrequencyType.value === ScheduledTemplateFrequencyType.Daily.type || currentFrequencyValue.value.length > 0);
 
 const firstDayOfWeek = computed<WeekDayValue>(() => userStore.currentUserFirstDayOfWeek);
 
@@ -191,6 +199,10 @@ function changeFrequencyValue(e: Event): void {
 }
 
 function save(): void {
+    if (!canApply.value) {
+        showToast('请至少选择一个执行日期');
+        return;
+    }
     emit('update:type', currentFrequencyType.value);
     emit('update:modelValue', sortNumbersArray(currentFrequencyValue.value).join(','));
     emit('update:show', false);
@@ -203,6 +215,10 @@ function close(): void {
 function onSheetOpen(event: { $el: Framework7Dom }): void {
     currentFrequencyType.value = props.type;
     currentFrequencyValue.value = getFrequencyValues(props.modelValue);
+    if (currentFrequencyType.value === ScheduledTemplateFrequencyType.Yearly.type && currentFrequencyValue.value.length > 0) {
+        const firstMonth = Math.floor(currentFrequencyValue.value[0]! / 100);
+        if (firstMonth >= 1 && firstMonth <= 12) yearlyMonth.value = firstMonth;
+    }
     scrollToSelectedItem(event.$el[0], '.schedule-frequency-value-container', '.schedule-frequency-value-container', 'li.list-item-selected');
 }
 
@@ -221,7 +237,33 @@ function onSheetClosed(): void {
     padding-inline-end: 6px;
 }
 
-.schedule-frequency-value-list-list.list .item-content {
+.schedule-frequency-value-list.list .item-content {
     padding-inline-start: 0;
+}
+
+.schedule-yearly-picker .yearly-months {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+    padding: 4px 4px 8px;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--f7-sheet-bg-color, var(--cy-card, #fff));
+}
+
+.schedule-yearly-picker .yearly-months button {
+    border: 1px solid var(--cy-line, #e0e0e0);
+    background: transparent;
+    color: var(--cy-muted, #666);
+    border-radius: 6px;
+    padding: 5px 0;
+    font-size: 12px;
+}
+
+.schedule-yearly-picker .yearly-months button.active {
+    background: var(--cy-accent, #087f72);
+    border-color: var(--cy-accent, #087f72);
+    color: #fff;
 }
 </style>

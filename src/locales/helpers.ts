@@ -490,7 +490,9 @@ export function useI18n() {
         if (parameters) {
             for (const parameter of parameters) {
                 if (parameter.localized) {
-                    localizedParameters[parameter.key] = t(`parameter.${parameter.value}`);
+                    const key = `parameter.${parameter.value}`;
+                    const translated = t(key);
+                    localizedParameters[parameter.key] = translated === key ? '输入项' : translated;
                 } else {
                     localizedParameters[parameter.key] = parameter.value;
                 }
@@ -952,7 +954,13 @@ export function useI18n() {
             return '';
         }
 
-        return t(finalMessage, parameters);
+        const translated = t(finalMessage, parameters);
+        // New server errors may already be localized and have no client key.
+        // Preserve the server's message rather than exposing the lookup prefix.
+        if (isObject(message) && isObject(message.error) && finalMessage.startsWith('error.') && translated === finalMessage) {
+            return message.error.errorMessage;
+        }
+        return translated;
     }
 
     function joinMultiText(textArray: string[]): string {

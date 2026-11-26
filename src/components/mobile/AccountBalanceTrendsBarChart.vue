@@ -1,6 +1,6 @@
 <template>
     <f7-list class="skeleton-text margin-top-half" media-list v-if="loading">
-        <f7-list-item class="account-balance-trends-list-item" title="Date Range" after="0.00 USD"
+        <f7-list-item class="account-balance-trends-list-item" title="日期区间" after="¥0.00"
                       :key="itemIdx" v-for="itemIdx in [ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 ]">
             <template #media>
                 <f7-icon f7="app_fill"></f7-icon>
@@ -95,11 +95,12 @@ const chartColors = computed<ColorValue[]>(() => settingsStore.chartColorList);
 
 const allVirtualListItems = computed<MobileAccountBalanceTrendsChartItem[]>(() => {
     const ret: MobileAccountBalanceTrendsChartItem[] = [];
-    let maxClosingBalance: BigDecimal = BIG_DECIMAL_ZERO;
+    let maxAbsClosingBalance: BigDecimal = BIG_DECIMAL_ZERO;
 
     for (const [dataItem, index] of itemAndIndex(allDataItems.value)) {
-        if (dataItem.closingBalance.greaterThan(maxClosingBalance)) {
-            maxClosingBalance = dataItem.closingBalance;
+        const absBalance = dataItem.closingBalance.isNegative() ? dataItem.closingBalance.negate() : dataItem.closingBalance;
+        if (absBalance.greaterThan(maxAbsClosingBalance)) {
+            maxAbsClosingBalance = absBalance;
         }
 
         const finalDataItem: MobileAccountBalanceTrendsChartItem = {
@@ -116,7 +117,7 @@ const allVirtualListItems = computed<MobileAccountBalanceTrendsChartItem[]>(() =
             maximumBalance: dataItem.maximumBalance,
             q1Balance: dataItem.q1Balance,
             q3Balance: dataItem.q3Balance,
-            color: `#${chartColors.value[0] as string}`,
+            color: dataItem.closingBalance.isNegative() ? '#e65757' : `#${chartColors.value[0] as string}`,
             percent: 0.0
         };
 
@@ -124,8 +125,9 @@ const allVirtualListItems = computed<MobileAccountBalanceTrendsChartItem[]>(() =
     }
 
     for (const item of ret) {
-        if (maxClosingBalance.isPositive() && item.closingBalance.isPositive()) {
-            item.percent = item.closingBalance.divide(maxClosingBalance).multiply(100).toDoubleNumber();
+        const absBalance = item.closingBalance.isNegative() ? item.closingBalance.negate() : item.closingBalance;
+        if (maxAbsClosingBalance.isPositive() && absBalance.isPositive()) {
+            item.percent = absBalance.divide(maxAbsClosingBalance).multiply(100).toDoubleNumber();
         } else {
             item.percent = 0.0;
         }

@@ -14,17 +14,18 @@ import (
 )
 
 type CreditStatement struct {
-	Month          string   `json:"month"`
-	StartDate      string   `json:"startDate"`
-	EndDate        string   `json:"endDate"`
-	StatementDate  string   `json:"statementDate"`
-	DueDate        string   `json:"dueDate"`
-	Charges        string   `json:"charges"`
-	Fees           string   `json:"fees"`
-	FutureFees     string   `json:"futureFees"`
-	Remaining      string   `json:"remaining"`
-	Unbilled       bool     `json:"unbilled"`
-	TransactionIds []string `json:"transactionIds"`
+	Month              string   `json:"month"`
+	StartDate          string   `json:"startDate"`
+	EndDate            string   `json:"endDate"`
+	StatementDate      string   `json:"statementDate"`
+	DueDate            string   `json:"dueDate"`
+	Charges            string   `json:"charges"`
+	Fees               string   `json:"fees"`
+	FutureFees         string   `json:"futureFees"`
+	Remaining          string   `json:"remaining"`
+	ProjectedRemaining string   `json:"projectedRemaining"`
+	Unbilled           bool     `json:"unbilled"`
+	TransactionIds     []string `json:"transactionIds"`
 }
 type CreditReport struct {
 	AccountId    string            `json:"accountId"`
@@ -101,10 +102,37 @@ func creditReportInSession(sess *xorm.Session, uid int64, a models.Account, now 
 	if err := sess.Where("uid=? AND account_id=?", uid, a.AccountId).Find(&plans); err != nil {
 		return report, err
 	}
+	expenseNet := map[int64]decimal.Decimal{}
 	txMap := map[string]models.Transaction{}
 	feeIDs := map[string]bool{}
+	expenseIDs := make([]int64, 0, len(txs))
 	for _, tx := range txs {
 		txMap[fmt.Sprint(tx.TransactionId)] = tx
+		if tx.Type == models.TRANSACTION_DB_TYPE_EXPENSE && tx.Amount > 0 {
+			expenseIDs = append(expenseIDs, tx.TransactionId)
+		}
+	}
+	// Only money returned to this credit account can reduce its debt. Keep
+	// that credit with the original expense's cycle instead of treating it as
+	// an unrelated payment against the oldest cycle.
+	refunded := map[int64]decimal.Decimal{}
+	linkedRefundCash := map[int64]bool{}
+	for start := 0; start < len(expenseIDs); start += 500 {
+		end := min(start+500, len(expenseIDs))
+		var refunds []models.Refund
+		if err := sess.Where("uid=? AND deleted=?", uid, false).In("expense_id", expenseIDs[start:end]).Find(&refunds); err != nil {
+			return report, err
+		}
+		for _, refund := range refunds {
+			cash, err := refundCash(sess, uid, &refund)
+			if err != nil {
+				return report, err
+			}
+			if cash.AccountId == a.AccountId {
+				refunded[refund.ExpenseId] = refunded[refund.ExpenseId].Add(decimal.New(-cash.Amount, -2))
+				linkedRefundCash[cash.TransactionId] = true
+			}
+		}
 	}
 	for _, p := range plans {
 		if p.Data != nil {
@@ -130,15 +158,25 @@ func creditReportInSession(sess *xorm.Session, uid int64, a models.Account, now 
 		*field = old.Add(amount).StringFixed(2)
 	}
 	for _, tx := range txs {
+		if linkedRefundCash[tx.TransactionId] {
+			continue
+		}
 		at := time.Unix(utils.GetUnixTimeFromTransactionTime(tx.TransactionTime), 0).In(now.Location())
 		row := get(at)
 		row.TransactionIds = append(row.TransactionIds, fmt.Sprint(tx.TransactionId))
-		if feeIDs[fmt.Sprint(tx.TransactionId)] {
+		if feeIDs[fmt.Sprint(tx.TransactionId)] && tx.Type == models.TRANSACTION_DB_TYPE_EXPENSE {
+			// The fee is a real ledger fact even after its plan is closed or
+			// the user changes the fee's posting date or amount.
+			add(&row.Fees, decimal.New(tx.Amount, -2))
 			continue
 		}
 		amount := decimal.New(tx.Amount, -2)
 		switch tx.Type {
 		case models.TRANSACTION_DB_TYPE_EXPENSE, models.TRANSACTION_DB_TYPE_TRANSFER_OUT:
+			if tx.Type == models.TRANSACTION_DB_TYPE_EXPENSE && tx.Amount > 0 {
+				amount = amount.Sub(decimal.Min(amount, refunded[tx.TransactionId]))
+				expenseNet[tx.TransactionId] = amount
+			}
 			add(&row.Charges, amount)
 		case models.TRANSACTION_DB_TYPE_MODIFY_BALANCE:
 			if tx.RelatedAccountAmount < 0 {
@@ -161,7 +199,14 @@ func creditReportInSession(sess *xorm.Session, uid int64, a models.Account, now 
 			origin = periods[plan.StatementMonth]
 		}
 		if origin != nil {
-			add(&origin.Charges, principal.Neg())
+			subtract := principal
+			if plan.ExpenseId > 0 {
+				if net, ok := expenseNet[plan.ExpenseId]; ok {
+					subtract = decimal.Min(principal, net)
+					expenseNet[plan.ExpenseId] = net.Sub(subtract)
+				}
+			}
+			add(&origin.Charges, subtract.Neg())
 		}
 		for _, payment := range plan.Data.Payments {
 			at, err := time.ParseInLocation("2006-01-02", payment.Date, now.Location())
@@ -171,11 +216,7 @@ func creditReportInSession(sess *xorm.Session, uid int64, a models.Account, now 
 			row := get(at)
 			part, _ := decimal.NewFromString(payment.Principal)
 			add(&row.Charges, part)
-			if payment.Accrued {
-				if tx, ok := txMap[payment.FeeTransactionId]; ok {
-					add(&row.Fees, decimal.New(tx.Amount, -2))
-				}
-			} else {
+			if !payment.Accrued {
 				fee, _ := decimal.NewFromString(payment.Fee)
 				add(&row.FutureFees, fee)
 			}
@@ -196,7 +237,21 @@ func creditReportInSession(sess *xorm.Session, uid int64, a models.Account, now 
 		unpaid := decimal.Min(remaining, rowDebt)
 		remaining = remaining.Sub(unpaid)
 		row.Remaining = unpaid.StringFixed(2)
-		report.Statements = append(report.Statements, *row)
+	}
+	// Pending fees stay in their scheduled cycles. A positive account balance
+	// is an advance credit and offsets the earliest pending fee first; neither
+	// projection creates a transaction or changes the actual debt.
+	credit := decimal.Max(decimal.Zero, decimal.New(a.Balance, -2))
+	for i := len(keys) - 1; i >= 0; i-- {
+		row := periods[keys[i]]
+		future, _ := decimal.NewFromString(row.FutureFees)
+		used := decimal.Min(credit, future)
+		credit = credit.Sub(used)
+		unpaid, _ := decimal.NewFromString(row.Remaining)
+		row.ProjectedRemaining = unpaid.Add(future.Sub(used)).StringFixed(2)
+	}
+	for _, key := range keys {
+		report.Statements = append(report.Statements, *periods[key])
 	}
 	if p := a.AssetProfile(); p != nil && p.AnnualFeeDate != "" {
 		due, err := time.ParseInLocation("2006-01-02", p.AnnualFeeDate, now.Location())

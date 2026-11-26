@@ -1,6 +1,6 @@
 import {monetaryIncome,monetaryIncomeRevision,type MonetaryBinding} from '@/lib/monetary-income.ts';
-import {computed,ref,watch} from 'vue';
-import {investments,investmentError} from '@/lib/investments.ts';
+import {computed,ref,shallowRef,watch} from 'vue';
+import {investments,investmentError,type FundDCAAlert} from '@/lib/investments.ts';
 import {LedgerDecimal} from '@/lib/ledger-display.ts';
 import {useBooksStore} from '@/stores/books.ts';
 import {useTransactionsStore} from '@/stores/transaction.ts';
@@ -14,7 +14,7 @@ export const investmentNames:Record<string,string>={OPENING:'初始持仓',BUY:'
 export const investmentTypes=[{key:'FUND',name:'基金',market:'CN_FUND'},{key:'CN',name:'股票（沪深）',market:'CN'},{key:'HK',name:'港股',market:'HK'},{key:'US',name:'美股',market:'US'},{key:'CRYPTO',name:'加密货币',market:'CRYPTO'},{key:'METAL',name:'期货 / 贵金属',market:''},{key:'OTHER',name:'自定义理财',market:''}];
 export function blankHolding(accountId='',instrumentId=''):HoldingProfile{return {id:'',accountId,instrumentId,name:'',group:'',note:'',profitOffset:'0',hidden:false,excludeFromTotal:false,excludeProfit:false,bookIds:[],version:0};}
 export function investmentGroup(asset?:Instrument):string{if(asset?.type==='CRYPTO')return '加密货币';if(asset?.type==='FUND')return '基金';if(asset?.type==='STOCK')return asset.market==='HK'?'港股':asset.market==='US'?'美股':'股票';return '其他理财';}
-export function investmentSum(values:(string|null|undefined)[]):string|null{return values.some(v=>v==null)?null:values.reduce((a,v)=>a.plus(v!),new LedgerDecimal(0)).toString();}
+export function investmentSum(values:(string|null|undefined)[]):string|null{return values.some(v=>v==null||v.trim()==='')?null:values.reduce((a,v)=>a.plus(v!),new LedgerDecimal(0)).toString();}
 export {investmentProfitClass as profitClass} from '@/lib/investment-display.ts';
 export function validInvestmentNumber(raw:string,name:string,positive=false,signed=false):string{if(raw.length>80||!(signed?/^-?\d+(\.\d{1,18})?$/:/^\d+(\.\d{1,18})?$/).test(raw)||positive&&!new LedgerDecimal(raw).gt(0))throw Error(`${name}请填写${positive?'大于零的':''}数字，最多18位小数`);return raw;}
 export function invalidateInvestmentData():void{useTransactionsStore().updateStoreInvalidState({accountList:true,transactionList:true,overview:true,statistics:true,explorer:true,reconciliationStatement:true});}
@@ -63,10 +63,12 @@ export function useInvestmentData(){
     return {monetary,monetaryRows,wealth,assets,accounts,profiles,events,orders,loading,error,ready,summaryReady,zone,books,preferences,load,rows,scopedRows,includedRows,visibleRows};
 }
 
+export const fundDCAAlerts = shallowRef<FundDCAAlert[]>([]);
+
 let planSyncPending=false,lastPlanSync=0;
-export async function syncInvestmentPlansOnOpen():Promise<void>{
+export async function syncInvestmentPlansOnOpen(force=false):Promise<void>{
  const {isUserLogined,isUserUnlocked}=await import('@/lib/userstate.ts');
- if(planSyncPending||document.hidden||!isUserLogined()||!isUserUnlocked()||Date.now()-lastPlanSync<60000)return;
+ if(planSyncPending||document.hidden||!isUserLogined()||!isUserUnlocked()||(!force&&Date.now()-lastPlanSync<60000))return;
  planSyncPending=true;lastPlanSync=Date.now();
- try{const result=await investments.syncPlans();if(result.created)invalidateInvestmentData();}catch{/* 定投页显示待处理原因并提供重试。 */}finally{planSyncPending=false;}
+ try{const result=await investments.syncPlans(force);fundDCAAlerts.value=result.alerts||[];if(result.created)invalidateInvestmentData();}catch{/* 定投页显示待处理原因并提供重试。 */}finally{planSyncPending=false;}
 }

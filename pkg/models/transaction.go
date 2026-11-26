@@ -130,8 +130,11 @@ type Transaction struct {
 	TransferFeeParentId    int64             `xorm:"NOT NULL DEFAULT 0 INDEX"`
 	DebtDueDate            string            `xorm:"VARCHAR(10) NOT NULL DEFAULT ''"`
 	LocationName           string            `xorm:"VARCHAR(200) NOT NULL DEFAULT ''"`
+	LocationAddress        string            `xorm:"VARCHAR(500) NOT NULL DEFAULT ''"`
+	LinkedTransactionIds   []string          `xorm:"TEXT json"`
 	DiscountAmount         string            `xorm:"VARCHAR(32) NOT NULL DEFAULT '0'"`
 	ExcludeFromStatistics  bool              `xorm:"NOT NULL DEFAULT 0"`
+	BudgetExclusionMode    int8              `xorm:"NOT NULL DEFAULT 0"`
 	ReimbursementAccountId int64             `xorm:"NOT NULL DEFAULT 0 INDEX"`
 	ReimbursementClosedAt  int64             `xorm:"NOT NULL DEFAULT 0"`
 	ReimbursementReceiptId string            `xorm:"VARCHAR(64) NOT NULL DEFAULT ''"`
@@ -160,6 +163,30 @@ type Transaction struct {
 	DeletedUnixTime        int64
 }
 
+// IsExcludedFromBudget preserves the former combined setting for legacy rows.
+func (t *Transaction) IsExcludedFromBudget() bool {
+	switch t.BudgetExclusionMode {
+	case 1:
+		return false
+	case 2:
+		return true
+	default:
+		return t.ExcludeFromStatistics
+	}
+}
+
+// SetBudgetExclusion leaves the legacy or existing setting intact when omitted.
+func (t *Transaction) SetBudgetExclusion(excluded *bool) {
+	if excluded == nil {
+		return
+	}
+	if *excluded {
+		t.BudgetExclusionMode = 2
+	} else {
+		t.BudgetExclusionMode = 1
+	}
+}
+
 // TransactionWithAccountBalance represents a transaction item with account balance
 type TransactionWithAccountBalance struct {
 	*Transaction
@@ -179,8 +206,11 @@ type TransactionCreateRequest struct {
 	TransferFeeCategoryId  int64                          `json:"transferFeeCategoryId,string" binding:"min=0"`
 	DebtDueDate            string                         `json:"debtDueDate" binding:"max=10"`
 	LocationName           string                         `json:"locationName" binding:"max=200"`
+	LocationAddress        string                         `json:"locationAddress" binding:"omitempty,max=500"`
+	LinkedTransactionIds   []string                       `json:"linkedTransactionIds" binding:"omitempty,max=20"`
 	DiscountAmount         string                         `json:"discountAmount" binding:"max=16"`
 	ExcludeFromStatistics  bool                           `json:"excludeFromStatistics"`
+	ExcludeFromBudget      *bool                          `json:"excludeFromBudget"`
 	ReimbursementAccountId int64                          `json:"reimbursementAccountId,string" binding:"min=0"`
 	BookId                 string                         `json:"bookId" binding:"max=64"`
 	Type                   TransactionType                `json:"type" binding:"required"`
@@ -205,8 +235,11 @@ type TransactionModifyRequest struct {
 	TransferFeeCategoryId  *int64                         `json:"transferFeeCategoryId,string" binding:"omitempty,min=0"`
 	DebtDueDate            *string                        `json:"debtDueDate" binding:"omitempty,max=10"`
 	LocationName           *string                        `json:"locationName" binding:"omitempty,max=200"`
+	LocationAddress        *string                        `json:"locationAddress" binding:"omitempty,max=500"`
+	LinkedTransactionIds   *[]string                      `json:"linkedTransactionIds" binding:"omitempty,max=20"`
 	DiscountAmount         *string                        `json:"discountAmount" binding:"omitempty,max=16"`
 	ExcludeFromStatistics  *bool                          `json:"excludeFromStatistics"`
+	ExcludeFromBudget      *bool                          `json:"excludeFromBudget"`
 	ReimbursementAccountId *int64                         `json:"reimbursementAccountId,string" binding:"omitempty,min=0"`
 	BookId                 string                         `json:"bookId" binding:"max=64"`
 	Id                     int64                          `json:"id,string" binding:"required,min=1"`
@@ -445,13 +478,18 @@ type TransactionInfoResponse struct {
 	ScheduledCreated       bool                                     `json:"scheduledCreated"`
 	MonetaryIncome         *MonetaryIncomeDay                       `json:"monetaryIncome,omitempty"`
 	Wallet                 *WalletTransactionInfo                   `json:"wallet,omitempty"`
+	InvestmentSettlement   *InvestmentSettlementInfo                `json:"investmentSettlement,omitempty"`
+	Refund                 *RefundProjection                        `json:"refund,omitempty"`
 	TransferFeeAmount      string                                   `json:"transferFeeAmount"`
 	TransferFeeCategoryId  int64                                    `json:"transferFeeCategoryId,string"`
 	TransferFeeParentId    int64                                    `json:"transferFeeParentId,string"`
 	DebtDueDate            string                                   `json:"debtDueDate"`
 	LocationName           string                                   `json:"locationName"`
+	LocationAddress        string                                   `json:"locationAddress,omitempty"`
+	LinkedTransactionIds   []string                                 `json:"linkedTransactionIds,omitempty"`
 	DiscountAmount         string                                   `json:"discountAmount"`
 	ExcludeFromStatistics  bool                                     `json:"excludeFromStatistics"`
+	ExcludeFromBudget      bool                                     `json:"excludeFromBudget"`
 	ReimbursementAccountId int64                                    `json:"reimbursementAccountId,string"`
 	ReimbursementClosedAt  int64                                    `json:"reimbursementClosedAt"`
 	ReimbursementReceiptId string                                   `json:"reimbursementReceiptId,omitempty"`
@@ -486,6 +524,12 @@ type WalletTransactionInfo struct {
 	Amount       string `json:"amount"`
 	ExchangeRate string `json:"exchangeRate"`
 	FXDate       string `json:"fxDate"`
+}
+
+// InvestmentSettlementInfo is display metadata, not an additional accounting fact.
+type InvestmentSettlementInfo struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
 }
 
 // TransactionCountResponse represents transaction count response
@@ -536,6 +580,8 @@ type TransactionStatisticResponseItem struct {
 	RelatedAccountId   int64                         `json:"relatedAccountId,string,omitempty"`
 	RelatedAccountType TransactionRelatedAccountType `json:"relatedAccountType,omitempty"`
 	TotalAmount        string                        `json:"amount"`
+	Currency           string                        `json:"currency,omitempty"`
+	Unassigned         bool                          `json:"unassigned,omitempty"`
 }
 
 // TransactionStatisticTrendsResponseItem represents the data within each statistic interval
@@ -594,6 +640,8 @@ type TransactionTotalAmount struct {
 	AccountId        int64
 	RelatedAccountId int64
 	Amount           *big.Int
+	Currency         string
+	Unassigned       bool
 }
 
 // TransactionAmountsAndCurrency represents income and expense amounts with currency
@@ -706,7 +754,7 @@ func (t *Transaction) ToTransactionInfoResponse(tagIds []int64, editable bool) *
 		CreatedAt: t.CreatedUnixTime, ScheduledCreated: t.ScheduledCreated,
 		BookId:            t.BookId,
 		TransferFeeAmount: t.TransferFeeAmount, TransferFeeCategoryId: t.TransferFeeCategoryId, TransferFeeParentId: t.TransferFeeParentId,
-		DebtDueDate: t.DebtDueDate, LocationName: t.LocationName,
+		DebtDueDate: t.DebtDueDate, LocationName: t.LocationName, LocationAddress: t.LocationAddress, LinkedTransactionIds: t.LinkedTransactionIds,
 		DiscountAmount:         t.DiscountAmount,
 		InvestmentEventId:      t.InvestmentEventId,
 		Id:                     t.TransactionId,
@@ -721,6 +769,7 @@ func (t *Transaction) ToTransactionInfoResponse(tagIds []int64, editable bool) *
 		DestinationAmount:      destinationAmount,
 		HideAmount:             t.HideAmount,
 		ExcludeFromStatistics:  t.ExcludeFromStatistics,
+		ExcludeFromBudget:      t.IsExcludedFromBudget(),
 		ReimbursementAccountId: t.ReimbursementAccountId,
 		ReimbursementClosedAt:  t.ReimbursementClosedAt,
 		ReimbursementReceiptId: t.ReimbursementReceiptId,

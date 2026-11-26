@@ -228,7 +228,9 @@ export function useReconciliationStatementPageBase() {
     }
 
     function getDisplayTransactionType(transaction: TransactionReconciliationStatementResponseItemWithInfo): string {
-        if (transaction.type === TransactionType.ModifyBalance) {
+        if (transaction.refund?.kind === 'cash') {
+            return '退款';
+        } else if (transaction.type === TransactionType.ModifyBalance) {
             return tt('Modify Balance');
         } else if (transaction.type === TransactionType.Income) {
             return tt('Income');
@@ -276,7 +278,8 @@ export function useReconciliationStatementPageBase() {
     }
 
     function getDisplaySourceAmount(transaction: TransactionReconciliationStatementResponseItemWithInfo, inDefaultCurrency?: boolean): string {
-        return formatAmount(parseBigDecimal(transaction.sourceAmount), transaction.hideAmount, transaction.sourceAccount?.currency ?? defaultCurrency.value, inDefaultCurrency);
+        const amount = parseBigDecimal(transaction.sourceAmount);
+        return formatAmount(transaction.refund?.kind === 'cash' ? amount.negate() : amount, transaction.hideAmount, transaction.sourceAccount?.currency ?? defaultCurrency.value, inDefaultCurrency);
     }
 
     function getDisplayDestinationAmount(transaction: TransactionReconciliationStatementResponseItemWithInfo, inDefaultCurrency?: boolean): string {
@@ -333,7 +336,9 @@ export function useReconciliationStatementPageBase() {
             let displayAmount = formatAmountToWesternArabicNumeralsWithoutDigitGrouping(parseBigDecimal(transaction.sourceAmount), transaction.sourceAccount?.currency);
             let displayAccountName = replaceAll(transaction.sourceAccountName, separator, ' ');
 
-            if (transaction.type === TransactionType.ModifyBalance) {
+            if (transaction.refund?.kind === 'cash') {
+                displayAmount = formatAmountToWesternArabicNumeralsWithoutDigitGrouping(parseBigDecimal(transaction.sourceAmount).negate(), transaction.sourceAccount?.currency);
+            } else if (transaction.type === TransactionType.ModifyBalance) {
                 categoryName = tt('Modify Balance');
             } else if (transaction.type === TransactionType.Transfer && transaction.destinationAccountId === accountId.value) {
                 displayAmount = formatAmountToWesternArabicNumeralsWithoutDigitGrouping(parseBigDecimal(transaction.destinationAmount), transaction.destinationAccount?.currency);

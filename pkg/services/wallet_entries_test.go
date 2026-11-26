@@ -2,11 +2,16 @@ package services
 
 import (
 	"fmt"
-	"github.com/mayswind/ezbookkeeping/pkg/investments"
-	"github.com/mayswind/ezbookkeeping/pkg/models"
-	"github.com/stretchr/testify/require"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/mayswind/ezbookkeeping/pkg/investments"
+	"github.com/mayswind/ezbookkeeping/pkg/localbackup"
+	"github.com/mayswind/ezbookkeeping/pkg/models"
+	"github.com/stretchr/testify/require"
+	"xorm.io/xorm"
 )
 
 func walletFixture(f *investmentDBFixture) (string, string) {
@@ -148,4 +153,127 @@ func TestWalletPaymentValidationRollbackAndAccountCurrencyPreservation(t *testin
 	account.Currency = "EUR"
 	_, err = f.s.UpdatePortfolioAccount(nil, f.uid, *account)
 	require.Error(t, err)
+}
+
+func TestWalletDiscountAndPicturesLifecycleAndBackupRestore(t *testing.T) {
+	f := newInvestmentDBFixture(t)
+	first, second := walletFixture(f)
+	_, err := f.engine.Insert(
+		&models.TransactionPictureInfo{Uid: f.uid, PictureId: 8801, TransactionId: models.TransactionPictureNewPictureTransactionId, PictureExtension: "jpg"},
+		&models.TransactionPictureInfo{Uid: f.uid, PictureId: 8802, TransactionId: models.TransactionPictureNewPictureTransactionId, PictureExtension: "png"},
+	)
+	require.NoError(t, err)
+	base := walletEvent(f, first, second)
+	discount := "2.5"
+	pics := []string{"8801"}
+	base.Wallet.DiscountAmount = &discount
+	base.Wallet.PictureIDs = &pics
+	paid := f.create(base, "wallet-discount-pic-create")
+	require.NotNil(t, paid.Event.Wallet.DiscountAmount)
+	require.Equal(t, "2.50", *paid.Event.Wallet.DiscountAmount)
+	require.NotNil(t, paid.Event.Wallet.PictureIDs)
+	require.Equal(t, []string{"8801"}, *paid.Event.Wallet.PictureIDs)
+	require.Len(t, paid.Event.Wallet.Pictures, 1)
+	require.Equal(t, "/pictures/8801.jpg", paid.Event.Wallet.Pictures[0].OriginalUrl)
+
+	var tx models.Transaction
+	has, err := f.engine.Where("uid=? AND investment_event_id=? AND deleted=?", f.uid, paid.Event.ID, false).Get(&tx)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.Equal(t, int64(10800), tx.Amount)
+	require.Equal(t, "18.00", tx.DiscountAmount)
+
+	var p1 models.TransactionPictureInfo
+	has, err = f.engine.ID(8801).Get(&p1)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.False(t, p1.Deleted)
+	require.Equal(t, tx.TransactionId, p1.TransactionId)
+
+	// Older client omits DiscountAmount & PictureIDs on revise -> preserves both cleanly.
+	legacyEdit := paid.Event
+	wCopy := *paid.Event.Wallet
+	wCopy.DiscountAmount = nil
+	wCopy.PictureIDs = nil
+	legacyEdit.Wallet = &wCopy
+	revisedLegacy, err := f.s.Mutate(nil, f.uid, legacyEdit, "", "revise", false)
+	require.NoError(t, err)
+	require.Equal(t, "2.50", *revisedLegacy.Event.Wallet.DiscountAmount)
+	require.Equal(t, []string{"8801"}, *revisedLegacy.Event.Wallet.PictureIDs)
+	var txAfterLegacy models.Transaction
+	has, err = f.engine.Where("uid=? AND investment_event_id=? AND deleted=?", f.uid, paid.Event.ID, false).Get(&txAfterLegacy)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.Equal(t, "18.00", txAfterLegacy.DiscountAmount)
+	p1 = models.TransactionPictureInfo{}
+	has, err = f.engine.ID(8801).Get(&p1)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.False(t, p1.Deleted)
+	require.Equal(t, txAfterLegacy.TransactionId, p1.TransactionId)
+
+	// Switch to new discount and replace picture 8801 -> 8802.
+	newDiscount := "1.00"
+	newPics := []string{"8802"}
+	edit := revisedLegacy.Event
+	wEdit := *revisedLegacy.Event.Wallet
+	wEdit.DiscountAmount = &newDiscount
+	wEdit.PictureIDs = &newPics
+	edit.Wallet = &wEdit
+	revised, err := f.s.Mutate(nil, f.uid, edit, "", "revise", false)
+	require.NoError(t, err)
+	require.Equal(t, "1.00", *revised.Event.Wallet.DiscountAmount)
+	require.Equal(t, []string{"8802"}, *revised.Event.Wallet.PictureIDs)
+	require.Len(t, revised.Event.Wallet.Pictures, 1)
+	require.Equal(t, "/pictures/8802.png", revised.Event.Wallet.Pictures[0].OriginalUrl)
+
+	var txFinal models.Transaction
+	has, err = f.engine.Where("uid=? AND investment_event_id=? AND deleted=?", f.uid, paid.Event.ID, false).Get(&txFinal)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.Equal(t, "7.20", txFinal.DiscountAmount)
+	p1 = models.TransactionPictureInfo{}
+	has, err = f.engine.ID(8801).Get(&p1)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.True(t, p1.Deleted)
+	var p2 models.TransactionPictureInfo
+	has, err = f.engine.ID(8802).Get(&p2)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.False(t, p2.Deleted)
+	require.Equal(t, txFinal.TransactionId, p2.TransactionId)
+
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "cyledger.ini"), []byte("[database]\ntype=sqlite3\n"), 0600))
+	archive := filepath.Join(t.TempDir(), "wallet-discount-pic.zip")
+	require.NoError(t, localbackup.Create(root, archive, []byte(`{}`), func(target string) error {
+		_, e := f.engine.Exec("VACUUM INTO ?", target)
+		return e
+	}))
+	stage, err := localbackup.Stage(archive, t.TempDir())
+	require.NoError(t, err)
+	restored, err := xorm.NewEngine("sqlite3", filepath.Join(stage, "data", "cyledger.db"))
+	require.NoError(t, err)
+	defer restored.Close()
+	var restoredTx models.Transaction
+	has, err = restored.ID(txFinal.TransactionId).Get(&restoredTx)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.Equal(t, "7.20", restoredTx.DiscountAmount)
+	var restoredPic models.TransactionPictureInfo
+	has, err = restored.ID(8802).Get(&restoredPic)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.False(t, restoredPic.Deleted)
+	require.Equal(t, txFinal.TransactionId, restoredPic.TransactionId)
+
+	// Void deletes remaining attached pictures cleanly.
+	_, err = f.s.Mutate(nil, f.uid, revised.Event, "", "void", false)
+	require.NoError(t, err)
+	p2 = models.TransactionPictureInfo{}
+	has, err = f.engine.ID(8802).Get(&p2)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.True(t, p2.Deleted)
 }

@@ -86,10 +86,40 @@ func reimbursementPaid(sess *xorm.Session, uid, expenseID, exceptIncome int64) (
 	return paid, nil
 }
 
+// reimbursementEligibleAt is the original expense less refunds effective at
+// the requested time. Existing receipts remain facts even when refunds later
+// reduce the eligible amount below what was already received.
+func reimbursementEligibleAt(sess *xorm.Session, claim *models.Transaction, at int64) (int64, error) {
+	summary, err := refundSummary(sess, claim.Uid, claim.TransactionId)
+	if err != nil {
+		return 0, err
+	}
+	remaining := claim.Amount
+	for _, refund := range summary.Refunds {
+		if at > 0 && refund.Time > at {
+			continue
+		}
+		amount, err := decimal.NewFromString(refund.Amount)
+		if err != nil || amount.IsNegative() {
+			return 0, investmentError("退款金额不一致，请先核对账本")
+		}
+		minor := amount.Shift(2).IntPart()
+		if minor >= remaining {
+			remaining = 0
+		} else {
+			remaining -= minor
+		}
+	}
+	return remaining, nil
+}
+
 func validateReimbursementTransaction(sess *xorm.Session, tx, old *models.Transaction) error {
 	if old != nil {
 		tx.ReimbursementReceiptId = old.ReimbursementReceiptId
 		tx.ReimbursementClosedAt = old.ReimbursementClosedAt
+		if old.ReimbursementReceiptId != "" && tx.BookId != old.BookId {
+			return investmentError("报销到账请与原支出一起通过批量移动账本操作")
+		}
 		if old.ReimbursementAccountId > 0 {
 			paid, err := reimbursementPaid(sess, tx.Uid, old.TransactionId, 0)
 			if err != nil {
@@ -97,6 +127,9 @@ func validateReimbursementTransaction(sess *xorm.Session, tx, old *models.Transa
 			}
 			if paid > 0 && (tx.ReimbursementAccountId != old.ReimbursementAccountId || tx.Type != models.TRANSACTION_DB_TYPE_EXPENSE || tx.Amount < paid) {
 				return investmentError("已有报销到账，修改前请先处理报销记录，支出不能小于已报金额")
+			}
+			if paid > 0 && tx.BookId != old.BookId {
+				return investmentError("已有报销到账，请通过批量移动账本同时移动关联流水")
 			}
 		}
 	}
@@ -141,7 +174,17 @@ func validateReimbursementTransaction(sess *xorm.Session, tx, old *models.Transa
 		if err != nil {
 			return err
 		}
-		if tx.Amount > expense.Amount-paid {
+		eligible, err := reimbursementEligibleAt(sess, &expense, 0)
+		if err != nil {
+			return err
+		}
+		limit := eligible - paid
+		// A refund can make an existing receipt exceed the new eligible amount.
+		// Allow retaining or reducing that receipt, but do not increase it.
+		if limit < old.Amount {
+			limit = old.Amount
+		}
+		if tx.Amount > limit {
 			return investmentError("报销到账金额不能超过剩余可报金额")
 		}
 		var cash, source models.Account
@@ -178,14 +221,21 @@ func reimbursementBalancesAt(sess *xorm.Session, uid, at int64) (map[int64]int64
 		if err != nil {
 			return nil, err
 		}
-		remaining := claim.Amount
+		remaining, err := reimbursementEligibleAt(sess, &claim, at)
+		if err != nil {
+			return nil, err
+		}
 		for _, tx := range payments {
 			if at == 0 || utils.GetUnixTimeFromTransactionTime(tx.TransactionTime) <= at {
-				remaining -= tx.Amount
+				if tx.Amount <= 0 {
+					return nil, investmentError("报销到账金额无效，请先核对账本")
+				}
+				if tx.Amount >= remaining {
+					remaining = 0
+				} else {
+					remaining -= tx.Amount
+				}
 			}
-		}
-		if remaining < 0 {
-			return nil, investmentError("已报金额大于原支出，请核对报销记录")
 		}
 		n, ok := utils.AddInt64(balances[claim.ReimbursementAccountId], remaining)
 		if !ok {
@@ -228,7 +278,11 @@ func (s *InvestmentService) ReimbursementClaims(c core.Context, uid int64) ([]Re
 			if _, err := sess.ID(tx.AccountId).Where("uid=?", uid).Get(&a); err != nil {
 				return err
 			}
-			row := ReimbursementClaimView{TransactionId: fmt.Sprint(tx.TransactionId), AccountId: fmt.Sprint(tx.ReimbursementAccountId), SourceAccountId: fmt.Sprint(tx.AccountId), BookId: tx.BookId, CategoryId: fmt.Sprint(tx.CategoryId), Currency: a.Currency, Amount: decimal.New(tx.Amount, -2).StringFixed(2), Time: utils.GetUnixTimeFromTransactionTime(tx.TransactionTime), Comment: tx.Comment, Ended: tx.ReimbursementClosedAt > 0, Receipts: []ReimbursementReceiptView{}}
+			eligible, err := reimbursementEligibleAt(sess, &tx, 0)
+			if err != nil {
+				return err
+			}
+			row := ReimbursementClaimView{TransactionId: fmt.Sprint(tx.TransactionId), AccountId: fmt.Sprint(tx.ReimbursementAccountId), SourceAccountId: fmt.Sprint(tx.AccountId), BookId: tx.BookId, CategoryId: fmt.Sprint(tx.CategoryId), Currency: a.Currency, Amount: decimal.New(eligible, -2).StringFixed(2), Time: utils.GetUnixTimeFromTransactionTime(tx.TransactionTime), Comment: tx.Comment, Ended: tx.ReimbursementClosedAt > 0, Receipts: []ReimbursementReceiptView{}}
 			receipts, payments, err := reimbursementPayments(sess, uid, tx.TransactionId)
 			if err != nil {
 				return err
@@ -239,12 +293,19 @@ func (s *InvestmentService) ReimbursementClaims(c core.Context, uid int64) ([]Re
 				if !ok {
 					continue
 				}
-				paid += income.Amount
+				paid, ok = utils.AddInt64(paid, income.Amount)
+				if !ok {
+					return errs.ErrAccountBalanceOverflow
+				}
 				row.Receipts = append(row.Receipts, ReimbursementReceiptView{Id: r.Id, TransactionId: fmt.Sprint(r.IncomeId), AccountId: fmt.Sprint(income.AccountId), Amount: decimal.New(income.Amount, -2).StringFixed(2), Time: utils.GetUnixTimeFromTransactionTime(income.TransactionTime), Comment: income.Comment})
 			}
-			row.Closed = row.Ended || paid >= tx.Amount
+			row.Closed = row.Ended || paid >= eligible
 			row.Paid = decimal.New(paid, -2).StringFixed(2)
-			row.Pending = decimal.New(tx.Amount-paid, -2).StringFixed(2)
+			pending := eligible - paid
+			if pending < 0 {
+				pending = 0
+			}
+			row.Pending = decimal.New(pending, -2).StringFixed(2)
 			out = append(out, row)
 		}
 		return nil
@@ -286,7 +347,7 @@ func (s *InvestmentService) ReceiveReimbursement(c core.Context, uid int64, inpu
 		}
 		if has {
 			if row.RequestDigest != digest {
-				return investmentError("请求已使用，请刷新后重试")
+				return investmentError("页面状态已过期，请刷新后重试")
 			}
 			return nil
 		}
@@ -302,7 +363,11 @@ func (s *InvestmentService) ReceiveReimbursement(c core.Context, uid int64, inpu
 		if err != nil {
 			return err
 		}
-		if minor > expense.Amount-paid {
+		eligible, err := reimbursementEligibleAt(sess, &expense, 0)
+		if err != nil {
+			return err
+		}
+		if minor > eligible-paid {
 			return investmentError("到账金额不能超过剩余可报金额")
 		}
 		var cash, source models.Account
@@ -388,36 +453,134 @@ func (s *InvestmentService) SetReimbursementState(c core.Context, uid, expenseID
 	return err == nil, err
 }
 
-// Automatic asset entries choose an existing usable leaf or create a named
-// category in the same transaction. Users can subsequently edit that category.
+func canonicalAssetCategoryTarget(kind models.TransactionCategoryType, name string) string {
+	switch kind {
+	case models.CATEGORY_TYPE_EXPENSE:
+		return "其他"
+	case models.CATEGORY_TYPE_INCOME:
+		if name == "投资收益" {
+			return "投资收益"
+		}
+		return "其他收入"
+	case models.CATEGORY_TYPE_TRANSFER:
+		if name == "收款" {
+			return "收回"
+		}
+		return name
+	default:
+		return name
+	}
+}
+
+func assetCategoryIcon(name string) int64 {
+	switch name {
+	case "其他":
+		return 1000
+	case "其他收入":
+		return 3010
+	case "投资收益":
+		return 2100
+	case "资金往来", "借入", "借出", "还款", "收回":
+		return 4000
+	default:
+		return 1000
+	}
+}
+
+func categoryUsableInBook(cat *models.TransactionCategory, book string) bool {
+	return len(cat.BookIds) == 0 || (book != "" && slices.Contains(cat.BookIds, book))
+}
+
+// Automatic asset entries reuse an existing usable regular category instead of
+// creating standalone displayOrder=0 top-level categories.
 func assetIncomeCategory(sess *xorm.Session, uid int64, book string, kind models.TransactionCategoryType, name string) (int64, error) {
-	var categories []models.TransactionCategory
-	if err := sess.Where("uid=? AND deleted=? AND hidden=? AND type=? AND parent_category_id>0 AND name=?", uid, false, false, kind, name).Find(&categories); err != nil {
+	targetName := canonicalAssetCategoryTarget(kind, name)
+	var all []*models.TransactionCategory
+	if err := sess.Where("uid=? AND deleted=? AND hidden=? AND type=?", uid, false, false, kind).
+		Asc("parent_category_id").Asc("display_order").Asc("category_id").Find(&all); err != nil {
 		return 0, err
 	}
-	for _, cat := range categories {
-		if len(cat.BookIds) == 0 || slices.Contains(cat.BookIds, book) {
-			var parent models.TransactionCategory
-			has, err := sess.ID(cat.ParentCategoryId).Where("uid=? AND deleted=? AND hidden=?", uid, false, false).Get(&parent)
-			if err != nil {
-				return 0, err
-			}
-			if has && (len(parent.BookIds) == 0 || slices.Contains(parent.BookIds, book)) {
-				return cat.CategoryId, nil
-			}
+	parents := make(map[int64]*models.TransactionCategory)
+	var parentOrder []*models.TransactionCategory
+	var maxParentOrder int32
+	for _, cat := range all {
+		if cat.ParentCategoryId != models.LevelOneTransactionCategoryParentId {
+			continue
+		}
+		if cat.DisplayOrder > maxParentOrder {
+			maxParentOrder = cat.DisplayOrder
+		}
+		if categoryUsableInBook(cat, book) {
+			parents[cat.CategoryId] = cat
+			parentOrder = append(parentOrder, cat)
 		}
 	}
+	var usableChildren []*models.TransactionCategory
+	for _, cat := range all {
+		if cat.ParentCategoryId == models.LevelOneTransactionCategoryParentId {
+			continue
+		}
+		if _, hasParent := parents[cat.ParentCategoryId]; hasParent && categoryUsableInBook(cat, book) {
+			usableChildren = append(usableChildren, cat)
+		}
+	}
+	for _, child := range usableChildren {
+		if child.Name == targetName {
+			return child.CategoryId, nil
+		}
+	}
+	if len(usableChildren) > 0 {
+		// Fall back to the first visible leaf in parent order if "其他"/"其他收入" was hidden or removed.
+		firstByParent := make(map[int64]int64, len(usableChildren))
+		for _, child := range usableChildren {
+			if _, ok := firstByParent[child.ParentCategoryId]; !ok {
+				firstByParent[child.ParentCategoryId] = child.CategoryId
+			}
+		}
+		for _, parent := range parentOrder {
+			if id, ok := firstByParent[parent.CategoryId]; ok {
+				return id, nil
+			}
+		}
+		return usableChildren[0].CategoryId, nil
+	}
 	now := time.Now().Unix()
-	parent := &models.TransactionCategory{Uid: uid, CategoryId: TransactionCategories.GenerateUuid(uuid.UUID_TYPE_CATEGORY), Name: name, Type: kind, Icon: 2100, Color: "48aa98", BookIds: []string{}, CreatedUnixTime: now, UpdatedUnixTime: now}
-	if parent.CategoryId <= 0 {
-		return 0, errs.ErrSystemIsBusy
+	var targetParent *models.TransactionCategory
+	for _, parent := range parentOrder {
+		if parent.Name == targetName {
+			targetParent = parent
+			break
+		}
 	}
-	if _, err := sess.Insert(parent); err != nil {
-		return 0, err
+	icon := assetCategoryIcon(targetName)
+	if targetParent == nil {
+		order := maxParentOrder + 1
+		if order < 1 {
+			order = 1
+		}
+		targetParent = &models.TransactionCategory{
+			Uid:             uid,
+			CategoryId:      TransactionCategories.GenerateUuid(uuid.UUID_TYPE_CATEGORY),
+			Name:            targetName,
+			Type:            kind,
+			Icon:            icon,
+			Color:           "12786f",
+			BookIds:         []string{},
+			DisplayOrder:    order,
+			CreatedUnixTime: now,
+			UpdatedUnixTime: now,
+		}
+		if targetParent.CategoryId <= 0 {
+			return 0, errs.ErrSystemIsBusy
+		}
+		if _, err := sess.Insert(targetParent); err != nil {
+			return 0, err
+		}
 	}
-	child := *parent
+	child := *targetParent
 	child.CategoryId = TransactionCategories.GenerateUuid(uuid.UUID_TYPE_CATEGORY)
-	child.ParentCategoryId = parent.CategoryId
+	child.ParentCategoryId = targetParent.CategoryId
+	child.DisplayOrder = 1
 	if child.CategoryId <= 0 {
 		return 0, errs.ErrSystemIsBusy
 	}

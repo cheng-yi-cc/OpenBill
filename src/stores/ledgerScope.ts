@@ -25,11 +25,12 @@ export const useLedgerScopeStore = defineStore('ledgerScope', () => {
     });
     const month = ref(moment().tz(timeZone.value).format('YYYY-MM'));
     const selectedDay = ref(moment().tz(timeZone.value).format('YYYY-MM-DD'));
+    const calendarBookIds = ref<string[] | null>(null);
     const accountId = ref(''), categoryId = ref(''), tagId = ref(''), type = ref(0);
     const filterKey = computed(() => [accountId.value,categoryId.value,tagId.value,type.value,timeZone.value].join('|'));
     function resetFilters(): void { accountId.value = ''; categoryId.value = ''; tagId.value = ''; type.value = 0; }
     watch(() => users.currentUserBasicInfo?.username, () => {
-        resetFilters(); month.value = moment().tz(timeZone.value).format('YYYY-MM'); selectedDay.value = moment().tz(timeZone.value).format('YYYY-MM-DD');
+        calendarBookIds.value = null; resetFilters(); month.value = moment().tz(timeZone.value).format('YYYY-MM'); selectedDay.value = moment().tz(timeZone.value).format('YYYY-MM-DD');
     });
-    return { timeZone, currentDay, syncClock, month, selectedDay, accountId, categoryId, tagId, type, filterKey, resetFilters };
+    return { timeZone, currentDay, syncClock, month, selectedDay, calendarBookIds, accountId, categoryId, tagId, type, filterKey, resetFilters };
 });

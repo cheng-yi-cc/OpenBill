@@ -286,3 +286,106 @@ func TestCryptoDCAAccountDeletionCancelsPendingWithPreviewRevision(t *testing.T)
 	require.NoError(t, err)
 	require.Zero(t, pending)
 }
+
+func TestLedgerClearPausesCryptoPlansAndRetainsDayIdentity(t *testing.T) {
+	for _, deleteAccounts := range []bool{false, true} {
+		t.Run(fmt.Sprintf("deleteAccounts=%t", deleteAccounts), func(t *testing.T) {
+			f := newInvestmentDBFixture(t)
+			plan := &models.CryptoDCAPlan{Id: "clear-plan", Uid: f.uid, AccountId: f.portfolioID, InstrumentId: "crypto:bitcoin", PaymentInstrumentId: "crypto:tether", Amount: "10", DailyTime: "08:00", StartDate: "2026-11-01", NextDate: "2026-11-03", TimeZone: "UTC", BookId: DefaultBookID(f.uid), Enabled: true, Revision: 3}
+			other := *plan
+			other.Id, other.Uid = "other-clear-plan", f.uid+1
+			pending := &models.CryptoDCADay{Id: "clear-plan:2026-11-02", Uid: f.uid, PlanId: plan.Id, Date: "2026-11-02", AccountId: f.portfolioID, Status: "pending"}
+			done := &models.CryptoDCADay{Id: "clear-plan:2026-11-01", Uid: f.uid, PlanId: plan.Id, Date: "2026-11-01", AccountId: f.portfolioID, Status: "done", EventId: "existing-event"}
+			_, err := f.engine.Insert(plan, &other, pending, done)
+			require.NoError(t, err)
+			_, err = f.engine.Exec(`CREATE TRIGGER reject_crypto_clear BEFORE UPDATE ON "transaction" WHEN NEW.deleted=1 BEGIN SELECT RAISE(ABORT, 'test ledger failure'); END`)
+			require.NoError(t, err)
+			require.Error(t, Transactions.DeleteAllTransactions(nil, f.uid, deleteAccounts))
+			var stored models.CryptoDCAPlan
+			has, err := f.engine.ID(plan.Id).Get(&stored)
+			require.NoError(t, err)
+			require.True(t, has)
+			require.True(t, stored.Enabled)
+			require.EqualValues(t, 3, stored.Revision)
+			var day models.CryptoDCADay
+			has, err = f.engine.ID(pending.Id).Get(&day)
+			require.NoError(t, err)
+			require.True(t, has)
+			require.Equal(t, "pending", day.Status)
+			_, err = f.engine.Exec(`DROP TRIGGER reject_crypto_clear`)
+			require.NoError(t, err)
+			require.NoError(t, Transactions.DeleteAllTransactions(nil, f.uid, deleteAccounts))
+			stored = models.CryptoDCAPlan{}
+			has, err = f.engine.ID(plan.Id).Get(&stored)
+			require.NoError(t, err)
+			require.True(t, has)
+			require.False(t, stored.Enabled)
+			require.EqualValues(t, 4, stored.Revision)
+			day = models.CryptoDCADay{}
+			has, err = f.engine.ID(pending.Id).Get(&day)
+			require.NoError(t, err)
+			require.True(t, has)
+			require.Equal(t, "skipped", day.Status)
+			day = models.CryptoDCADay{}
+			has, err = f.engine.ID(done.Id).Get(&day)
+			require.NoError(t, err)
+			require.True(t, has)
+			require.Equal(t, "done", day.Status)
+			require.Equal(t, "existing-event", day.EventId)
+			stored = models.CryptoDCAPlan{}
+			has, err = f.engine.ID(other.Id).Get(&stored)
+			require.NoError(t, err)
+			require.True(t, has)
+			require.True(t, stored.Enabled)
+		})
+	}
+}
+
+func TestLedgerClearPreventsCryptoPurchaseAlreadyFetchingQuote(t *testing.T) {
+	f, req, now := dcaFixture(t, "100")
+	plan, err := f.s.SaveCryptoDCA(nil, f.uid, req)
+	require.NoError(t, err)
+	before, err := f.s.Events(nil, f.uid)
+	require.NoError(t, err)
+	fetching := make(chan struct{})
+	release := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		_, syncErr := f.s.syncCryptoDCAAt(nil, f.uid, true, now, func(ctx context.Context, pay, target string, at int64) (*marketquotes.CryptoHistoricalQuote, error) {
+			close(fetching)
+			select {
+			case <-release:
+				return dcaFixtureQuote(ctx, pay, target, at)
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		})
+		result <- syncErr
+	}()
+	select {
+	case <-fetching:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the purchase did not begin fetching its quote")
+	}
+	clearErr := Transactions.DeleteAllTransactions(nil, f.uid, false)
+	close(release)
+	require.NoError(t, clearErr)
+	select {
+	case syncErr := <-result:
+		require.NoError(t, syncErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pending synchronization did not finish")
+	}
+	after, err := f.s.Events(nil, f.uid)
+	require.NoError(t, err)
+	require.Equal(t, before, after, "an in-flight quote must not create a purchase after clear")
+	var stored models.CryptoDCAPlan
+	has, err := f.engine.ID(plan.Id).Get(&stored)
+	require.NoError(t, err)
+	require.True(t, has)
+	require.False(t, stored.Enabled)
+	count, err := f.engine.Where("uid=? AND plan_id=? AND status=?", f.uid, plan.Id, "pending").Count(&models.CryptoDCADay{})
+	require.NoError(t, err)
+	require.Zero(t, count)
+}

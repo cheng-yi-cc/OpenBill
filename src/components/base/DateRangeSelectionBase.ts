@@ -78,9 +78,7 @@ export function useDateRangeSelectionBase(props: CommonDateRangeSelectionProps) 
             DateRange.ThisWeek,
             DateRange.ThisMonth,
             DateRange.ThisYear,
-            DateRange.LastYear,
-            DateRange.ThisFiscalYear,
-            DateRange.LastFiscalYear
+            DateRange.LastYear
         ].forEach(dateRangeType => {
             const dateRange = getDateRangeByDateType(dateRangeType.type, firstDayOfWeek.value, userStore.currentUserFiscalYearStart) as TimeRangeAndDateType;
 

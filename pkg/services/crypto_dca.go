@@ -86,13 +86,7 @@ func cryptoDCAFutureDate(p models.CryptoDCAPlan, now time.Time) string {
 	return date
 }
 
-func (s *InvestmentService) SaveCryptoDCA(c core.Context, uid int64, req models.CryptoDCASaveRequest) (*models.CryptoDCAPlan, error) {
-	if uid <= 0 {
-		return nil, errs.ErrUserIdInvalid
-	}
-	if req.Id == "" && (len(req.RequestKey) < 8 || len(req.RequestKey) > 64) {
-		return nil, investmentError("新定投计划缺少有效请求标识")
-	}
+func newCryptoDCAPlan(uid int64, req models.CryptoDCASaveRequest) (*models.CryptoDCAPlan, error) {
 	if len(req.Id) > 64 || len(req.AccountId) > 64 || len(req.BookId) > 64 || len(req.TimeZone) > 64 || req.TimeZone == "" || !marketquotes.SupportsCryptoDCA(req.PaymentInstrumentId, req.InstrumentId) || investments.ValidateDecimal(req.Amount) != nil || !validCalendarDate(req.StartDate) || req.StartDate < "2015-01-01" || len(req.DailyTime) != 5 {
 		return nil, investmentError("请检查定投账户、币种、数量、日期和时间")
 	}
@@ -104,11 +98,25 @@ func (s *InvestmentService) SaveCryptoDCA(c core.Context, uid int64, req models.
 	if _, err := cryptoDCAScheduled(*p, p.StartDate); err != nil {
 		return nil, err
 	}
+	return p, nil
+}
+
+func (s *InvestmentService) SaveCryptoDCA(c core.Context, uid int64, req models.CryptoDCASaveRequest) (*models.CryptoDCAPlan, error) {
+	if uid <= 0 {
+		return nil, errs.ErrUserIdInvalid
+	}
+	if req.Id == "" && (len(req.RequestKey) < 8 || len(req.RequestKey) > 64) {
+		return nil, investmentError("页面状态已过期，请刷新后重试")
+	}
+	p, err := newCryptoDCAPlan(uid, req)
+	if err != nil {
+		return nil, err
+	}
 	defer s.lock(uid)()
 	raw, _ := json.Marshal(req)
 	hash := sha256.Sum256(raw)
 	digest := hex.EncodeToString(hash[:])
-	err := s.UserDataDB(uid).DoTransaction(c, func(sess *xorm.Session) error {
+	err = s.UserDataDB(uid).DoTransaction(c, func(sess *xorm.Session) error {
 		if req.Id == "" {
 			prior := new(models.InvestmentIdempotency)
 			has, err := sess.Where("uid=? AND request_key=?", uid, "dca-plan:"+req.RequestKey).Get(prior)

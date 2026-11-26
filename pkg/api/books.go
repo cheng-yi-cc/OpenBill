@@ -29,6 +29,13 @@ func (a *BooksApi) Modify(c *core.WebContext) (any, *errs.Error) {
 	}
 	return investmentResponse(services.Books.Modify(c, c.GetCurrentUid(), req))
 }
+func (a *BooksApi) CategoryVisibility(c *core.WebContext) (any, *errs.Error) {
+	var req models.BookCategoryVisibilityRequest
+	if err := investmentBind(c, &req); err != nil {
+		return nil, err
+	}
+	return investmentResponse(services.Books.SetCategoryVisibility(c, c.GetCurrentUid(), req))
+}
 func (a *BooksApi) Move(c *core.WebContext) (any, *errs.Error) {
 	var req models.BookMoveRequest
 	if err := investmentBind(c, &req); err != nil {
@@ -61,5 +68,23 @@ func (a *BooksApi) Move(c *core.WebContext) (any, *errs.Error) {
 			return nil, errs.ErrCannotModifyTransactionWithThisTransactionTime
 		}
 	}
-	return investmentResponse(true, services.Books.MoveTransactions(c, uid, ids, req.BookId))
+	return investmentResponse(true, services.Books.MoveTransactions(c, uid, ids, req.BookId, services.RefundActor{User: user, ClientTimezone: zone}))
+}
+
+func (a *BooksApi) MoveAll(c *core.WebContext) (any, *errs.Error) {
+	var req models.BookMoveAllRequest
+	if err := investmentBind(c, &req); err != nil {
+		return nil, err
+	}
+	uid := c.GetCurrentUid()
+	user, err := services.Users.GetUserById(c, uid)
+	if err != nil {
+		return nil, errs.ErrUserNotFound
+	}
+	zone, err := c.GetClientTimezone()
+	if err != nil {
+		return nil, errs.ErrClientTimezoneOffsetInvalid
+	}
+	count, moveErr := services.Books.MoveAllTransactions(c, uid, req.SourceBookId, req.TargetBookId, services.RefundActor{User: user, ClientTimezone: zone})
+	return investmentResponse(map[string]int{"movedTransactions": count}, moveErr)
 }

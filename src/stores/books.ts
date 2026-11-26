@@ -22,6 +22,7 @@ export const useBooksStore = defineStore('books', () => {
     let generation = 0;
     let reportVersion = 0;
     const activeBooks = computed(() => allBooks.value.filter(book => !book.archived));
+    const visibleBooks = computed(() => allBooks.value.filter(book => !book.hidden));
     const defaultBookId = computed(() => {
         const selected = selectedBookIds.value.length === 1 ? activeBooks.value.find(book => book.id === selectedBookIds.value[0]) : undefined;
         return selected?.id || activeBooks.value.find(book => book.isDefault)?.id || activeBooks.value[0]?.id || '';
@@ -42,7 +43,10 @@ export const useBooksStore = defineStore('books', () => {
         invalidateBookReports();
     });
     async function loadBooks(force = false): Promise<void> {
-        if (pending) return pending;
+        if (pending) {
+            await pending;
+            if (!force) return;
+        }
         if (loaded.value && !force) return;
         const version = generation;
         pending = request<LedgerBook[]>('get', 'list').then(items => {
@@ -53,8 +57,13 @@ export const useBooksStore = defineStore('books', () => {
         }).finally(() => { if (version === generation) pending = null; });
         return pending;
     }
-    async function createBook(name: string): Promise<void> {
-        await request('post', 'create', { name }); await loadBooks(true);
+    async function createBook(name: string, icon: string, showTransfers: boolean, showInvestments: boolean, hideExistingCategories = false): Promise<void> {
+        await request('post', 'create', { name, icon, showTransfers, showInvestments, hideExistingCategories }); await loadBooks(true);
+    }
+    async function setCategoryVisibility(bookId: string, revision: number, changes: { categoryId: string; hidden: boolean }[]): Promise<void> {
+        const updated = await request<LedgerBook>('post', 'category-visibility', { bookId, revision, changes });
+        const index = allBooks.value.findIndex(book => book.id === bookId);
+        if (index >= 0) allBooks.value.splice(index, 1, updated);
     }
     async function modifyBook(book: LedgerBook): Promise<void> {
         await request('post', 'modify', book); await loadBooks(true);
@@ -63,5 +72,10 @@ export const useBooksStore = defineStore('books', () => {
         await request('post', 'move', { transactionIds, bookId });
         invalidateBookReports();
     }
-    return { allBooks, activeBooks, selectedBookIds, loaded, defaultBookId, scopeName, captureReportScope, loadBooks, createBook, modifyBook, moveTransactions };
+    async function moveAllTransactions(sourceBookId: string, targetBookId: string): Promise<number> {
+        const result = await request<{ movedTransactions: number }>('post', 'move-all', { sourceBookId, targetBookId });
+        invalidateBookReports();
+        return result.movedTransactions;
+    }
+    return { allBooks, activeBooks, visibleBooks, selectedBookIds, loaded, defaultBookId, scopeName, captureReportScope, loadBooks, createBook, modifyBook, setCategoryVisibility, moveTransactions, moveAllTransactions };
 });

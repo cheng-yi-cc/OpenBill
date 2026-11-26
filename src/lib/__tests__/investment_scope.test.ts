@@ -16,8 +16,12 @@ describe('asset accounting scope',()=>{
   const hidden=row();hidden.profile.hidden=true;hidden.profile.excludeProfit=true;
   const excluded=row();excluded.profile.excludeFromTotal=true;excluded.position.marketValue=null;
   const money=[{value:'2000',excluded:false,binding:{totalIncome:'5'}},{value:null,excluded:true,binding:{}}];
-  expect(investmentAmounts([hidden,excluded],money)).toEqual({netValue:'2100',marketValue:'2120',holdingProfit:'20',totalProfit:'25'});
+  expect(investmentAmounts([hidden,excluded],money)).toEqual({netValue:'2100',marketValue:'2120',holdingProfit:'20',totalProfit:'25',missing:{netValue:0,marketValue:0,holdingProfit:0,totalProfit:0}});
   expect(holdingVisible(hidden.profile,{...preferences,rules:{}})).toBe(false);
+ });
+ it('retains known subtotals independently for each metric',()=>{
+  const unknown=row();unknown.position.marketValue='';unknown.position.unrealizedPnl=null;unknown.profit=null;
+  expect(investmentAmounts([row(),unknown],[])).toEqual({netValue:'120',marketValue:'120',holdingProfit:'20',totalProfit:'20',missing:{netValue:1,marketValue:1,holdingProfit:1,totalProfit:1}});
  });
  it('preserves unknown market value independently of a known contribution at cost',()=>{
   const r=row();r.profile.excludeProfit=true;r.position.marketValue=null;r.profit=null;
