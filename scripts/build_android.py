@@ -174,14 +174,16 @@ def main():
     for folder in (native, assets, resources, classes, dex):
         folder.mkdir(parents=True, exist_ok=True)
     if not args.skip_frontend:
-        run([npm_cmd, "run", "build"])
+        fe_env = os.environ.copy()
+        fe_env["OPENBILL_APP_VERSION"] = version_name
+        run([npm_cmd, "run", "build"], env=fe_env)
     if not (ROOT / "dist/mobile.html").is_file():
         raise SystemExit("Build the frontend first (npm run build)")
     if not args.skip_backend:
         env = os.environ.copy()
         env.update(GOOS="android", GOARCH="arm64", CGO_ENABLED="1", CC=str(compiler),
                    CGO_LDFLAGS="-Wl,-z,max-page-size=16384")
-        run([go, "build", "-trimpath", "-buildmode=c-shared", "-ldflags=-s -w",
+        run([go, "build", "-trimpath", "-buildmode=c-shared", f"-ldflags=-s -w -X main.appVersion={version_name}",
              "-o", native / "libcyledger_backend.so", "./android/backend"], env=env)
         run([compiler, "-shared", "-fPIC", "-O2", "-Wl,-z,max-page-size=16384",
              "-Wl,-soname,libcyledger_jni.so", "-I", native,

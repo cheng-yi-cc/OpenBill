@@ -59,7 +59,7 @@ const title=computed(()=>({comment:'备注',location:'账单地点',date:'账单
 const mutable=computed(()=>props.transaction.editable&&!props.transaction.investmentEventId&&props.transaction.transferFeeParentId==='0'&&!props.transaction.reimbursementReceiptId);
 const currency=computed(()=>accounts.allAccountsMap[props.transaction.sourceAccountId]?.currency||'CNY');
 const ordinaryAccounts=computed(()=>Object.values(accounts.allAccountsMap).filter(a=>a.visible&&a.type!==2));
-const selectableAccounts=computed(()=>ordinaryAccounts.value.filter(a=>(field.value==='reimbursement'?a.assetProfile.kind==='reimbursement'&&a.currency===currency.value:a.assetProfile.kind!=='reimbursement')&&a.name.includes(accountSearch.value)));
+const selectableAccounts=computed(()=>ordinaryAccounts.value.filter(a=>(field.value==='reimbursement'?a.assetProfile.kind==='reimbursement'&&a.currency===currency.value:a.assetProfile.kind!=='reimbursement'&&(!props.transaction.originalCurrency||field.value!=='source'||a.currency===currency.value))&&a.name.includes(accountSearch.value)));
 const selectedAccount=computed(()=>field.value==='destination'?draft.value?.destinationAccountId:field.value==='reimbursement'?draft.value?.reimbursementAccountId:draft.value?.sourceAccountId);
 const feeCategories=computed(()=>Object.values(categories.allTransactionCategoriesMap).filter(c=>c.parentId!=='0'&&!c.hidden&&c.type===(draft.value?.transferFeeAmount.startsWith('-')?1:2)));
 function dateText(time:number){return moment.unix(time).tz(props.timeZone).format('YYYY年MM月DD日 HH:mm');}

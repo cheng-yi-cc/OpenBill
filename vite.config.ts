@@ -118,7 +118,7 @@ export default defineConfig(() => {
         base: './',
         define: {
             __EZBOOKKEEPING_IS_PRODUCTION__: process.env['NODE_ENV'] === 'production',
-            __EZBOOKKEEPING_VERSION__: JSON.stringify(packageFile.version),
+            __EZBOOKKEEPING_VERSION__: JSON.stringify(process.env['OPENBILL_APP_VERSION'] || packageFile.version),
             __EZBOOKKEEPING_BUILD_UNIX_TIME__: JSON.stringify(buildUnixTime),
             __EZBOOKKEEPING_BUILD_COMMIT_HASH__: JSON.stringify(execFileSync('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: __dirname, encoding: 'utf8' }).trim()),
             __EZBOOKKEEPING_CONTRIBUTORS__: JSON.stringify(contributorsFile),

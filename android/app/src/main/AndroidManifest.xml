@@ -9,6 +9,7 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <application android:label="@APP_LABEL@" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/AppTheme" android:allowBackup="false"
         android:usesCleartextTraffic="false" android:networkSecurityConfig="@xml/network_security_config"
@@ -22,6 +23,7 @@
             </intent-filter>
         </receiver>
         <activity android:name="com.cyledger.android.MaintenanceActivity" android:exported="false" android:process=":maintenance" />
+        <receiver android:name="com.cyledger.android.UpdateInstallReceiver" android:exported="false" />
         <service android:name="com.cyledger.android.LedgerTileService" android:label="记一笔" android:icon="@drawable/ic_stat_openbill" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE" android:exported="true"><intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter></service>
         <receiver android:name="com.cyledger.android.DailyReminderReceiver" android:exported="false"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/><action android:name="android.intent.action.MY_PACKAGE_REPLACED"/><action android:name="android.intent.action.TIME_SET"/><action android:name="android.intent.action.TIMEZONE_CHANGED"/></intent-filter></receiver>
         <receiver android:name="com.cyledger.android.DcaAlarmReceiver" android:exported="false"><intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/><action android:name="android.intent.action.MY_PACKAGE_REPLACED"/><action android:name="android.intent.action.TIME_SET"/><action android:name="android.intent.action.TIMEZONE_CHANGED"/></intent-filter></receiver>

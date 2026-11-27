@@ -4,7 +4,7 @@ export function isNativePersonalMode(): boolean {
     return typeof window !== 'undefined' && (window as Window & { __CYLEDGER_PERSONAL__?: boolean }).__CYLEDGER_PERSONAL__ === true;
 }
 
-declare global { interface Window { CYLedgerAppearance?: { setTheme(color:string,dark:boolean):void }; CYLedgerLocal?: { status():string; settings(json:string):void; action(action:string,payload:string):void; preferences(json:string):void; backups():string; backup(settings:string):void; restore():void; restoreLocal?(name:string):void; exportBackup(name:string):void; deleteBackup(name:string):void } } }
+declare global { interface Window { CYLedgerAppearance?: { setTheme(color:string,dark:boolean):void }; CYLedgerLocal?: { status():string; settings(json:string):void; action(action:string,payload:string):void; preferences(json:string):void; backups():string; backup(settings:string):void; restore():void; restoreLocal?(name:string):void; exportBackup(name:string):void; deleteBackup(name:string):void; appInfo?():string; updateState?():string; checkUpdate?(manual:boolean):void; downloadAndInstallUpdate?():void; cancelUpdateDownload?():void; ignoreUpdate?(tag:string):void; openReleasePage?(url:string):void } } }
 
 function cssColorToHex(raw: string): string {
     const trimmed = raw.trim();

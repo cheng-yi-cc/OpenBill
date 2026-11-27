@@ -1499,6 +1499,8 @@ func (a *TransactionsApi) TransactionModifyHandler(c *core.WebContext) (any, *er
 
 	newTransaction := &models.Transaction{
 		BookId: transactionModifyReq.BookId, TransactionId: transaction.TransactionId,
+		OriginalCurrency: transaction.OriginalCurrency, OriginalAmount: transaction.OriginalAmount,
+		OriginalExchangeRate: transaction.OriginalExchangeRate, OriginalFXDate: transaction.OriginalFXDate,
 		TransferFeeAmount: transaction.TransferFeeAmount, TransferFeeCategoryId: transaction.TransferFeeCategoryId,
 		DebtDueDate: transaction.DebtDueDate, LocationName: transaction.LocationName,
 		LocationAddress: transaction.LocationAddress, LinkedTransactionIds: transaction.LinkedTransactionIds,
@@ -1547,6 +1549,24 @@ func (a *TransactionsApi) TransactionModifyHandler(c *core.WebContext) (any, *er
 	if transactionModifyReq.ReimbursementAccountId != nil {
 		newTransaction.ReimbursementAccountId = *transactionModifyReq.ReimbursementAccountId
 	}
+	if transactionModifyReq.OriginalCurrency != nil {
+		newTransaction.OriginalCurrency = *transactionModifyReq.OriginalCurrency
+	}
+	if transactionModifyReq.OriginalAmount != nil {
+		newTransaction.OriginalAmount = *transactionModifyReq.OriginalAmount
+	}
+	if transactionModifyReq.OriginalExchangeRate != nil {
+		newTransaction.OriginalExchangeRate = *transactionModifyReq.OriginalExchangeRate
+	}
+	if transactionModifyReq.OriginalFXDate != nil {
+		newTransaction.OriginalFXDate = *transactionModifyReq.OriginalFXDate
+	}
+	if newTransaction.Type != models.TRANSACTION_DB_TYPE_EXPENSE && newTransaction.Type != models.TRANSACTION_DB_TYPE_INCOME {
+		newTransaction.OriginalCurrency = ""
+		newTransaction.OriginalAmount = ""
+		newTransaction.OriginalExchangeRate = ""
+		newTransaction.OriginalFXDate = ""
+	}
 	if newTransaction.Type == models.TRANSACTION_DB_TYPE_TRANSFER_OUT {
 		newTransaction.RelatedAccountId = transactionModifyReq.DestinationAccountId
 		newTransaction.RelatedAccountAmount = transactionModifyReq.DestinationAmount
@@ -1561,6 +1581,8 @@ func (a *TransactionsApi) TransactionModifyHandler(c *core.WebContext) (any, *er
 		newTransaction.BookId = transaction.BookId
 	}
 	if transactionModifyReq.LocationAddress == nil && transactionModifyReq.LinkedTransactionIds == nil && newTransaction.BookId == transaction.BookId &&
+		newTransaction.OriginalCurrency == transaction.OriginalCurrency && newTransaction.OriginalAmount == transaction.OriginalAmount &&
+		newTransaction.OriginalExchangeRate == transaction.OriginalExchangeRate && newTransaction.OriginalFXDate == transaction.OriginalFXDate &&
 		newTransaction.TransferFeeAmount == transaction.TransferFeeAmount && newTransaction.TransferFeeCategoryId == transaction.TransferFeeCategoryId &&
 		newTransaction.DebtDueDate == transaction.DebtDueDate && newTransaction.LocationName == transaction.LocationName &&
 		newTransaction.DiscountAmount == transaction.DiscountAmount &&
@@ -3350,6 +3372,8 @@ func (a *TransactionsApi) createNewTransactionModel(uid int64, transactionCreate
 
 	transaction := &models.Transaction{
 		BookId:            transactionCreateReq.BookId,
+		OriginalCurrency:  transactionCreateReq.OriginalCurrency, OriginalAmount: transactionCreateReq.OriginalAmount,
+		OriginalExchangeRate: transactionCreateReq.OriginalExchangeRate, OriginalFXDate: transactionCreateReq.OriginalFXDate,
 		TransferFeeAmount: transactionCreateReq.TransferFeeAmount, TransferFeeCategoryId: transactionCreateReq.TransferFeeCategoryId,
 		DebtDueDate: transactionCreateReq.DebtDueDate, LocationName: transactionCreateReq.LocationName,
 		LocationAddress: transactionCreateReq.LocationAddress, LinkedTransactionIds: transactionCreateReq.LinkedTransactionIds,

@@ -25,7 +25,10 @@ import (
 	"gopkg.in/ini.v1"
 )
 
-var startOnce sync.Once
+var (
+	startOnce  sync.Once
+	appVersion = "0.3.0"
+)
 
 //export CYLedgerStart
 func CYLedgerStart(directory *C.char, port C.int) *C.char {
@@ -44,7 +47,7 @@ func CYLedgerStart(directory *C.char, port C.int) *C.char {
 			// Market configuration must never prevent access to the offline ledger.
 			fmt.Fprintln(os.Stderr, "行情中转配置无效，使用默认网络；账本仍可离线使用。")
 		}
-		core.Version = "OpenBill-Android-0.3.0"
+		core.Version = "OpenBill-Android-" + appVersion
 		app := &cli.Command{
 			Name:     "OpenBill",
 			Commands: []*cli.Command{cmd.WebServer},

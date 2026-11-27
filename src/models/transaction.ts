@@ -20,6 +20,10 @@ export class Transaction implements TransactionInfoResponse {
     public refund?: TransactionInfoResponse['refund'];
     public id: string;
     public bookId: string = '';
+    public originalCurrency: string = '';
+    public originalAmount: string = '';
+    public originalExchangeRate: string = '';
+    public originalFXDate: string = '';
     public investmentEventId?: string;
     public excludeFromStatistics = false;
     public excludeFromBudget = false;
@@ -251,8 +255,13 @@ export class Transaction implements TransactionInfoResponse {
     }
 
     public toCreateRequest(clientSessionId: string): TransactionCreateRequest {
+        const supportsOriginal = [TransactionType.Expense, TransactionType.Income].includes(this.type) && !!this.originalCurrency && !!this.originalAmount && !!this.originalExchangeRate;
         return {
             bookId: this.bookId,
+            originalCurrency: supportsOriginal ? this.originalCurrency : '',
+            originalAmount: supportsOriginal ? this.originalAmount : '',
+            originalExchangeRate: supportsOriginal ? this.originalExchangeRate : '',
+            originalFXDate: supportsOriginal ? this.originalFXDate : '',
             transferFeeAmount: this.type === TransactionType.Transfer ? this.transferFeeAmount : '0',
             transferFeeCategoryId: this.type === TransactionType.Transfer ? this.transferFeeCategoryId : '0',
             debtDueDate: this.type===TransactionType.Transfer?this.debtDueDate:'',
@@ -285,9 +294,14 @@ export class Transaction implements TransactionInfoResponse {
         if (this.type === TransactionType.ModifyBalance) {
             categoryId = '0';
         }
+        const supportsOriginal = [TransactionType.Expense, TransactionType.Income].includes(this.type) && !!this.originalCurrency && !!this.originalAmount && !!this.originalExchangeRate;
 
         return {
             bookId: this.bookId,
+            originalCurrency: supportsOriginal ? this.originalCurrency : '',
+            originalAmount: supportsOriginal ? this.originalAmount : '',
+            originalExchangeRate: supportsOriginal ? this.originalExchangeRate : '',
+            originalFXDate: supportsOriginal ? this.originalFXDate : '',
             transferFeeAmount: this.type === TransactionType.Transfer ? this.transferFeeAmount : '0',
             transferFeeCategoryId: this.type === TransactionType.Transfer ? this.transferFeeCategoryId : '0',
             debtDueDate: this.type===TransactionType.Transfer?this.debtDueDate:'',
@@ -320,9 +334,14 @@ export class Transaction implements TransactionInfoResponse {
             this.type !== TransactionType.Transfer) {
             return null;
         }
+        const supportsOriginal = [TransactionType.Expense, TransactionType.Income].includes(this.type) && !!this.originalCurrency && !!this.originalAmount && !!this.originalExchangeRate;
 
         return {
             bookId: this.bookId,
+            originalCurrency: supportsOriginal ? this.originalCurrency : '',
+            originalAmount: supportsOriginal ? this.originalAmount : '',
+            originalExchangeRate: supportsOriginal ? this.originalExchangeRate : '',
+            originalFXDate: supportsOriginal ? this.originalFXDate : '',
             transferFeeAmount: this.type === TransactionType.Transfer ? this.transferFeeAmount : '0',
             transferFeeCategoryId: this.type === TransactionType.Transfer ? this.transferFeeCategoryId : '0',
             debtDueDate: this.type===TransactionType.Transfer?this.debtDueDate:'',
@@ -385,6 +404,10 @@ export class Transaction implements TransactionInfoResponse {
         );
 
         transaction.bookId = transactionResponse.bookId || '';
+        transaction.originalCurrency = transactionResponse.originalCurrency || '';
+        transaction.originalAmount = transactionResponse.originalAmount || '';
+        transaction.originalExchangeRate = transactionResponse.originalExchangeRate || '';
+        transaction.originalFXDate = transactionResponse.originalFXDate || '';
         transaction.createdAt=transactionResponse.createdAt; transaction.scheduledCreated=transactionResponse.scheduledCreated; transaction.monetaryIncome=transactionResponse.monetaryIncome; transaction.wallet=transactionResponse.wallet; transaction.refund=transactionResponse.refund;
         transaction.debtDueDate=transactionResponse.debtDueDate||'';transaction.locationName=transactionResponse.locationName||'';
         transaction.locationAddress=transactionResponse.locationAddress||'';transaction.linkedTransactionIds=transactionResponse.linkedTransactionIds||[];
@@ -471,6 +494,10 @@ export class Transaction implements TransactionInfoResponse {
         );
 
         transaction.bookId = transactionDraft.bookId || '';
+        transaction.originalCurrency = transactionDraft.originalCurrency || '';
+        transaction.originalAmount = transactionDraft.originalAmount || '';
+        transaction.originalExchangeRate = transactionDraft.originalExchangeRate || '';
+        transaction.originalFXDate = transactionDraft.originalFXDate || '';
         transaction.debtDueDate=transactionDraft.debtDueDate||'';transaction.locationName=transactionDraft.locationName||'';
         transaction.locationAddress=transactionDraft.locationAddress||'';transaction.linkedTransactionIds=transactionDraft.linkedTransactionIds||[];
         transaction.discountAmount = transactionDraft.discountAmount || '0';
@@ -603,6 +630,10 @@ export interface TransactionDraft {
     readonly reimbursementReceiptId?: string;
     readonly reimbursementClosedAt?: number;
     readonly bookId?: string;
+    readonly originalCurrency?: string;
+    readonly originalAmount?: string;
+    readonly originalExchangeRate?: string;
+    readonly originalFXDate?: string;
     readonly type?: number;
     readonly categoryId?: string;
     readonly sourceAccountId?: string;
@@ -635,6 +666,10 @@ export interface TransactionCreateRequest {
     readonly reimbursementReceiptId?: string;
     readonly reimbursementClosedAt?: number;
     readonly bookId?: string;
+    readonly originalCurrency?: string;
+    readonly originalAmount?: string;
+    readonly originalExchangeRate?: string;
+    readonly originalFXDate?: string;
     readonly type: number;
     readonly categoryId: string;
     readonly time: number;
@@ -666,6 +701,10 @@ export interface TransactionModifyRequest {
     readonly reimbursementReceiptId?: string;
     readonly reimbursementClosedAt?: number;
     readonly bookId?: string;
+    readonly originalCurrency?: string;
+    readonly originalAmount?: string;
+    readonly originalExchangeRate?: string;
+    readonly originalFXDate?: string;
     readonly id: string;
     readonly type: number;
     readonly categoryId: string;
@@ -798,6 +837,10 @@ export interface TransactionInfoResponse {
     readonly reimbursementReceiptId?: string;
     readonly reimbursementClosedAt?: number;
     readonly bookId?: string;
+    readonly originalCurrency?: string;
+    readonly originalAmount?: string;
+    readonly originalExchangeRate?: string;
+    readonly originalFXDate?: string;
     readonly investmentEventId?: string;
     readonly id: string;
     readonly timeSequenceId: string;

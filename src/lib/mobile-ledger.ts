@@ -22,7 +22,7 @@ export interface LedgerEntry {
     investmentEventId?: string; excludeFromStatistics?: boolean; excludeFromBudget?: boolean; reimbursementAccountId?: string; reimbursementReceiptId?: string;
     wallet?: boolean;
     discountAmount?: string; transferFeeParentId?: string; accountFee?: string;
-    originalAmount?: string; refundedAmount?: string; refundExpenseId?: string; refundId?: string; refundExcess?: boolean;
+    originalAmount?: string; fxOriginal?: { currency: string; amount: string; rate: string; date?: string }; refundedAmount?: string; refundExpenseId?: string; refundId?: string; refundExcess?: boolean;
     bookName?: string; icon?: string; iconType?: number; color?: string; transferDirection?: 'in'|'out';
     accountIcon?: string; accountIconType?: number; pictures?: TransactionPictureInfoBasicResponse[];
     location?: string; reimbursementClosedAt?: number; destinationAccount?: string; sourceAccountName?:string; destinationCurrency?:string; destinationAmount?:string; transferFeeAmount?:string; debtDueDate?:string;
@@ -92,6 +92,7 @@ export function useMobileLedger(options: { applyFilters?: () => boolean; account
             accountIcon: account?.icon, accountIconType: account?.iconType, pictures: item.pictures,
             location: item.locationName || (item.geoLocation ? `${item.geoLocation.latitude}, ${item.geoLocation.longitude}` : ''),
             refundExpenseId: item.refund?.expenseId, refundId: item.refund?.refundId,
+            fxOriginal: !item.wallet && item.originalCurrency && item.originalAmount && item.originalExchangeRate ? { currency: item.originalCurrency, amount: item.originalAmount, rate: item.originalExchangeRate, date: item.originalFXDate } : undefined,
             reimbursementClosedAt: item.reimbursementClosedAt, destinationAccount: destination?.name, sourceAccountName:account?.name, destinationCurrency:destination?.currency, destinationAmount:item.type===4?new LedgerDecimal(item.destinationAmount).div(100).toString():undefined, transferFeeAmount:item.transferFeeAmount, debtDueDate:item.debtDueDate,
             transferDirection: options.accountId && item.type===4 ? incoming ? 'in' : 'out' : undefined
         };

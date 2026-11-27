@@ -14,6 +14,10 @@
    <div class="bill-row" role="button" tabindex="0" @click="emit('field','source')" @keydown.enter="emit('field','source')"><span>{{ transaction.type===4?'转出账户':'收支账户' }}</span><b role="button" tabindex="0" @click.stop="emit('account',transaction.wallet?.accountId || transaction.sourceAccountId)" @keydown.enter.stop="emit('account',transaction.wallet?.accountId || transaction.sourceAccountId)"><ItemIcon v-if="source?.icon" :icon-type="getAccountIconType(source.iconType)" :icon-id="source.icon" />{{ transaction.wallet?.accountName || source?.name || '账户已删除' }}</b></div>
    <template v-if="transaction.type===4"><div class="bill-row" role="button" tabindex="0" @click="emit('field','destination')" @keydown.enter="emit('field','destination')"><span>转入账户</span><b role="button" tabindex="0" @click.stop="emit('account',transaction.destinationAccountId)" @keydown.enter.stop="emit('account',transaction.destinationAccountId)"><ItemIcon v-if="destination?.icon" :icon-type="getAccountIconType(destination.iconType)" :icon-id="destination.icon" />{{ destination?.name || '账户已删除' }}</b></div><div class="bill-row" role="button" tabindex="0" @click="emit('field','destinationAmount')" @keydown.enter="emit('field','destinationAmount')"><span>转入金额</span><b>{{ transaction.hideAmount?'••••':money(transaction.destinationAmount,destination?.currency) }}</b></div><div v-if="nonzero(transaction.transferFeeAmount)" class="bill-row" role="button" tabindex="0" @click="emit('field','fee')" @keydown.enter="emit('field','fee')"><span>{{ isTransferDiscount ? '转账优惠' : '手续费' }}</span><b>{{ transaction.hideAmount ? '••••' : formatDecimalMoney(transaction.transferFeeAmount, currency, true) }}</b></div></template>
    <div v-if="nonzero(transaction.discountAmount)" class="bill-row" role="button" tabindex="0" @click="emit('field','discount')" @keydown.enter="emit('field','discount')"><span>优惠金额</span><b>{{ transaction.hideAmount ? '••••' : formatDecimalMoney(transaction.discountAmount, currency) }}</b></div>
+   <template v-if="!transaction.wallet && transaction.originalCurrency && transaction.originalAmount && transaction.originalExchangeRate">
+    <div class="bill-row"><span>原币金额</span><b>{{ transaction.hideAmount ? '••••' : formatDecimalMoney(transaction.originalAmount, transaction.originalCurrency) }}</b></div>
+    <div class="bill-row"><span>记账汇率</span><b>1 USD = {{ transaction.originalExchangeRate }} CNY<template v-if="transaction.originalFXDate"> · {{ transaction.originalFXDate }}</template></b></div>
+   </template>
   </section>
   <section class="bill-card">
    <div class="bill-row bill-note" role="button" tabindex="0" @click="emit('field','comment')" @keydown.enter="emit('field','comment')"><span>备注</span><b>{{ transaction.comment || '无备注' }}</b></div>
@@ -78,7 +82,7 @@ watch(()=>[props.transaction.id,props.transaction.sourceAccountId,props.transact
 onUnmounted(()=>{installmentGeneration++;});
 function date(at:number):string{return moment.unix(at).tz(props.timeZone).format('YYYY年MM月DD日 HH:mm');}
 function money(amount:number,currency='CNY'):string{const formatted=ledgerMoney(new LedgerDecimal(amount).div(100).toString(),false);return currency==='CNY'?`¥${formatted}`:`${formatted} ${currency}`;}
-function formatDecimalMoney(raw?:string,curr='CNY',abs=false):string{if(!raw)return '';const dec=new LedgerDecimal(raw);const formatted=ledgerMoney((abs?dec.abs():dec).toString(),false);return curr==='CNY'?`¥${formatted}`:`${formatted} ${curr}`;}
+function formatDecimalMoney(raw?:string,curr='CNY',abs=false):string{if(!raw)return '';const dec=new LedgerDecimal(raw);const formatted=ledgerMoney((abs?dec.abs():dec).toString(),false);return curr==='CNY'?`¥${formatted}`:curr==='USD'?`$${formatted}`:`${formatted} ${curr}`;}
 function nonzero(value?:string):boolean{return !!value&&!new LedgerDecimal(value).isZero();}
 </script>
 <style scoped>

@@ -1,6 +1,32 @@
 <template>
     <f7-app v-bind="f7params">
         <f7-view id="main-view" main url="/"></f7-view>
+        <f7-sheet v-model:opened="updateSheetOpen" class="cy-mobile-surface cy-update-sheet" style="height: auto" backdrop swipe-to-close>
+            <div class="cy-update-sheet-body">
+                <div class="cy-update-sheet-head">
+                    <strong>发现新版本 {{ updateState.latestTag }}</strong>
+                    <small v-if="updateState.apkSize > 0">{{ formatUpdateBytes(updateState.apkSize) }}</small>
+                </div>
+                <p v-if="updateState.releaseNotes" class="cy-update-sheet-notes">{{ updateState.releaseNotes }}</p>
+                <p v-else class="cy-update-sheet-notes">已有新版本发布，升级将保留手机上的全部账本与备份数据。</p>
+                <div v-if="updateState.status === 'downloading' || updateState.status === 'verifying'" class="cy-update-progress-wrap">
+                    <div class="cy-update-progress-bar"><span :style="{ width: `${updateState.progress}%` }"></span></div>
+                    <small>{{ updateState.status === 'verifying' ? '正在校验安装包完整性…' : `正在下载 ${updateState.progress}%` }}</small>
+                </div>
+                <p v-else-if="updateState.status === 'pending_permission'" class="cy-update-sheet-hint">请在系统设置中开启「允许安装应用」，返回后将自动继续安装。</p>
+                <p v-else-if="updateState.status === 'installing'" class="cy-update-sheet-hint">正在启动系统安装界面…</p>
+                <p v-else-if="updateState.status === 'error' && updateState.error" class="cy-update-sheet-error" role="alert">{{ updateState.error }}</p>
+                <div class="cy-update-sheet-actions">
+                    <button v-if="updateState.status === 'downloading' || updateState.status === 'verifying'" type="button" class="cy-button" @click="cancelAppUpdateDownload()">取消下载</button>
+                    <button v-else type="button" class="cy-button cy-primary" :disabled="updateState.status === 'installing'" @click="downloadAndInstallAppUpdate()">{{ updateState.status === 'error' ? '重试下载并安装' : '立即更新' }}</button>
+                    <div class="cy-update-sheet-subactions">
+                        <button v-if="updateState.status === 'available' || updateState.status === 'error'" type="button" class="cy-button" @click="ignoreCurrentUpdate">忽略此版本</button>
+                        <button v-if="updateState.status === 'error'" type="button" class="cy-button" @click="openAppReleasePage(updateState.releaseUrl)">浏览器打开</button>
+                        <button type="button" class="cy-button" @click="updateSheetOpen = false">稍后再说</button>
+                    </div>
+                </div>
+            </div>
+        </f7-sheet>
     </f7-app>
 	<CryptoDCAMonitor />
 </template>
@@ -31,6 +57,18 @@ import { ThemeType } from '@/core/theme.ts';
 
 import { isFunction } from '@/lib/common.ts';
 import { syncNativeSettings, isNativePersonalMode, syncNativeAppearance } from '@/lib/native.ts';
+import {
+    appInfo,
+    updateState,
+    hasVisibleUpdate,
+    initAppUpdater,
+    checkAppUpdate,
+    downloadAndInstallAppUpdate,
+    cancelAppUpdateDownload,
+    ignoreAppUpdate,
+    openAppReleasePage,
+    formatUpdateBytes
+} from '@/lib/app-update.ts';
 import {syncAssetAutomationOnOpen} from '@/lib/asset-tools.ts';
 import {syncInvestmentPlansOnOpen} from '@/lib/investment-mobile.ts';
 import { syncMonetaryIncomeOnOpen } from '@/lib/monetary-income.ts';
@@ -180,14 +218,34 @@ function onBackdropChanged(element: { push?: boolean, opened?: boolean }): void 
 function resumeMonetaryIncome(): void { syncNativeSettings(); syncNativeAppearance();void syncMonetaryIncomeOnOpen();void syncCryptoDCAOnOpen();void syncInvestmentPlansOnOpen();void syncAssetAutomationOnOpen(settingsStore.appSettings.timeZone).catch(()=>{}); }
 function onVisibilityChange(): void { if (!document.hidden) resumeMonetaryIncome(); }
 let stopMotionObserver: (() => void) | undefined;
+let updateCheckTimer: ReturnType<typeof setTimeout> | undefined;
+const updateSheetOpen = ref(false);
+let startupUpdatePrompted = false;
+function ignoreCurrentUpdate(): void {
+    if (updateState.value.latestTag) {
+        ignoreAppUpdate(updateState.value.latestTag);
+    }
+    updateSheetOpen.value = false;
+}
+watch([hasVisibleUpdate, () => updateState.value.status], ([visible, status]) => {
+    if (visible && status === 'available' && !startupUpdatePrompted) {
+        startupUpdatePrompted = true;
+        updateSheetOpen.value = true;
+    }
+});
 onUnmounted(() => {
     stopMotionObserver?.();
     if (appearanceTimer) clearInterval(appearanceTimer);
+    if (updateCheckTimer) clearTimeout(updateCheckTimer);
     document.removeEventListener('visibilitychange', onVisibilityChange);
     window.removeEventListener('online', resumeMonetaryIncome);
     delete (window as Window & { __openbillHandleBack?: () => boolean }).__openbillHandleBack;
 });
 onMounted(() => {
+    initAppUpdater();
+    if (isNativePersonalMode() && !appInfo.value.isQa) {
+        updateCheckTimer = setTimeout(() => checkAppUpdate(false), 2500);
+    }
     stopMotionObserver = initMotionPreferences(() => settingsStore.appSettings.animate);
     watch(() => settingsStore.appSettings.animate, enabled => {
         syncMotionDocumentFlag(enabled);
@@ -350,3 +408,21 @@ if (isUserLogined()) {
     }
 }
 </script>
+
+<style scoped>
+.cy-update-sheet { border-radius: 18px 18px 0 0; }
+.cy-update-sheet-body { padding: 18px 18px max(22px, var(--f7-safe-area-bottom, env(safe-area-inset-bottom))); display: grid; gap: 12px; color: var(--cy-ink); }
+.cy-update-sheet-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.cy-update-sheet-head strong { font-size: 17px; font-weight: 600; }
+.cy-update-sheet-head small { font-size: 12px; color: var(--cy-muted); }
+.cy-update-sheet-notes { max-height: 180px; overflow-y: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.65; color: var(--cy-muted); margin: 0; }
+.cy-update-progress-wrap { display: grid; gap: 6px; }
+.cy-update-progress-wrap small { font-size: 12px; color: var(--cy-muted); }
+.cy-update-progress-bar { height: 6px; border-radius: 999px; background: var(--cy-soft); overflow: hidden; }
+.cy-update-progress-bar span { display: block; height: 100%; background: var(--cy-accent); border-radius: 999px; }
+.cy-update-sheet-hint { font-size: 13px; color: var(--cy-muted); line-height: 1.5; margin: 0; }
+.cy-update-sheet-error { font-size: 13px; color: var(--cy-expense); line-height: 1.5; margin: 0; }
+.cy-update-sheet-actions { display: grid; gap: 8px; margin-top: 4px; }
+.cy-update-sheet-subactions { display: flex; gap: 8px; }
+.cy-update-sheet-subactions button { flex: 1; }
+</style>

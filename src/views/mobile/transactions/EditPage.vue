@@ -64,14 +64,18 @@
                                :book-id="transaction.bookId"
                                :preserve-category="mode === TransactionEditPageMode.Edit"
                                :categories="allCategories[quickCategoryType] || []" :category-type="quickCategoryType"
-                               :currency="sourceAccountCurrency" :destination-currency="destinationAccountCurrency"
-                               :transfer="transaction.type === TransactionType.Transfer && !debtMode" :can-save="!inputIsEmpty && transaction.sourceAmount !== 0"
+                               :currency="activeEntryCurrency" :destination-currency="destinationAccountCurrency"
+                               :currency-toggleable="canToggleEntryCurrency"
+                               :conversion-preview="conversionPreview"
+                               :conversion-error="conversionError"
+                               :transfer="transaction.type === TransactionType.Transfer && !debtMode" :can-save="quickCanSave"
                                :tags="quickTags" :amount-class="transaction.type === TransactionType.Expense ? 'cy-expense' : transaction.type === TransactionType.Income ? 'cy-income' : ''"
                                :remarks="historicalRemarks"
                                :validation-message="debtMode && transaction.sourceAmount ? debtValidationMessage : ''"
                                :disabled="submitting || recognizing" :allow-continue="mode === TransactionEditPageMode.Add"
-                               v-model:amount="transaction.sourceAmount" v-model:destination-amount="transaction.destinationAmount"
+                               v-model:amount="quickEntryAmount" v-model:destination-amount="transaction.destinationAmount"
                                v-model:category-id="quickCategoryId" v-model:comment="transaction.comment"
+                               @toggle-currency="toggleEntryCurrency" @preview="livePreviewAmount = $event"
                                @save="save(AfterSaveAction.GoBack)" @continue="save(AfterSaveAction.StayWithNewTransaction)"
                                @more="showAttributes = true" @tags="showTransactionTagSheet = true" @cancel="f7router.back()">
             <template v-if="debtMode" #selection><DebtEntryFields :accounts="debtAccounts" :categories="debtCategories" :amount="transaction.sourceAmount" :disabled="submitting" :previous-account-id="previousDebtAccountId" :previous-impact="previousDebtImpact" v-model:operation="debtOperation" v-model:source-id="transaction.sourceAccountId" v-model:destination-id="transaction.destinationAccountId" v-model:category-id="transaction.transferCategoryId" /></template>
@@ -610,6 +614,8 @@ import {
 import { useSettingsStore } from '@/stores/setting.ts';
 import { useUserStore } from '@/stores/user.ts';
 import { useAccountsStore } from '@/stores/account.ts';
+import { useExchangeRatesStore } from '@/stores/exchangeRates.ts';
+import { EntryMoney, isToggleableAccountCurrency, toggleAccountCurrency, resolveUsdCnyRate, convertEntryAmount, formatEntryCurrencySymbol, type SupportedEntryCurrency } from '@/lib/currency-conversion.ts';
 import { useTransactionCategoriesStore } from '@/stores/transactionCategory.ts';
 import { useTransactionTagsStore } from '@/stores/transactionTag.ts';
 import { useTransactionsStore } from '@/stores/transaction.ts';
@@ -732,7 +738,10 @@ const showLegacyForm=computed(()=>!loading.value && !useQuickEntry.value && mode
 const isSupportClipboard = !!navigator.clipboard;
 
 const settingsStore = useSettingsStore();
+const exchangeRatesStore = useExchangeRatesStore();
 const experience=useLedgerExperienceStore(),showAttributes=ref(false),showFee=ref(false),historicalRemarks=ref<string[]>([]);
+const entryCurrency = ref<string>(''), entryAmount = ref<number>(0), livePreviewAmount = ref<string | null>('0');
+const fxFetching = ref(false), lockedFx = ref<{ rate: string; date: string } | null>(null), initializingEntry = ref(true);
 const transferTotal=ref(''),transferTotalError=ref(''),feeSheetError=ref('');
 const feeDirection=ref<'fee'|'discount'>('fee'),feeAbsDraft=ref('');
 const hasFeeDraft=computed(()=>!!feeAbsDraft.value.trim() && validMoney(feeAbsDraft.value.trim()) && !new LedgerDecimal(feeAbsDraft.value.trim()).isZero());
@@ -852,7 +861,14 @@ function saveDiscount(){
     const disc=discountDraft.value.trim()||'0', act=discountActual.value.trim()||'0', orig=discountOriginal.value.trim()||new LedgerDecimal(act).plus(validMoney(disc)?disc:'0').toFixed(2);
     if(![disc,act,orig].every(validMoney)||!new LedgerDecimal(orig).eq(new LedgerDecimal(act).plus(disc))||new LedgerDecimal(act).mul(100).gt(TRANSACTION_MAX_AMOUNT)){discountError.value='请检查原价、优惠与实际金额，金额必须非负且最多两位小数。';return;}
     transaction.value.discountAmount=new LedgerDecimal(disc).toFixed(2);
-    transaction.value.sourceAmount=new LedgerDecimal(act).mul(100).toNumber();
+    const nextCents=new LedgerDecimal(act).mul(100).toNumber();
+    if(isCrossCurrency.value && nextCents!==transaction.value.sourceAmount){
+        entryCurrency.value=sourceAccountCurrency.value;
+        lockedFx.value=null;
+        entryAmount.value=nextCents;
+        clearOriginalCurrencyFields();
+    }
+    transaction.value.sourceAmount=nextCents;
     showDiscountSheet.value=false;
 }
 const reimbursementAccounts=computed(()=>Object.values(allAccountsMap.value).filter(a=>a.visible&&a.assetProfile.kind==='reimbursement'&&a.currency===sourceAccountCurrency.value));
@@ -965,14 +981,14 @@ const sourceChoice=computed({get:()=>transaction.value.sourceAccountId,set:(id:s
   if(t.pictures?.length)params.set('pictures',JSON.stringify(t.pictures));
   // The wallet has its own default unit. Do not reinterpret an amount already
   // entered in a different cash-account currency when changing the account.
-  if(walletCurrency(target)===sourceAccountCurrency.value){
-   if(transaction.value.sourceAmount)params.set('amount',new LedgerDecimal(transaction.value.sourceAmount).div(100).toFixed());
+  if(walletCurrency(target)===activeEntryCurrency.value){
+   if(quickEntryAmount.value)params.set('amount',new LedgerDecimal(quickEntryAmount.value).div(100).toFixed());
    if(t.discountAmount && !/^0+(?:\.0+)?$/.test(t.discountAmount))params.set('discountAmount',t.discountAmount);
   }
   submitted.value=true;
   props.f7router.navigate('/crypto/entry?'+params.toString(),{reloadCurrent:true});
  };
- const unsupported=unsupportedWalletDraftFields({tagIds:t.tagIds,pictures:t.pictures,reimbursementAccountId:t.reimbursementAccountId,locationName:t.locationName,geoLocation:t.geoLocation,excludeFromStatistics:t.excludeFromStatistics,excludeFromBudget:t.excludeFromBudget,hideAmount:t.hideAmount,discountAmount:t.discountAmount,sourceAmount:t.sourceAmount,sourceCurrency:sourceAccountCurrency.value,walletCurrency:walletCurrency(target),supportsWalletReportingFlags:true,supportsWalletLocationName:true,supportsWalletTags:true,supportsWalletDiscount:true,supportsWalletPictures:true});
+ const unsupported=unsupportedWalletDraftFields({tagIds:t.tagIds,pictures:t.pictures,reimbursementAccountId:t.reimbursementAccountId,locationName:t.locationName,geoLocation:t.geoLocation,excludeFromStatistics:t.excludeFromStatistics,excludeFromBudget:t.excludeFromBudget,hideAmount:t.hideAmount,discountAmount:t.discountAmount,sourceAmount:quickEntryAmount.value,sourceCurrency:activeEntryCurrency.value,walletCurrency:walletCurrency(target),supportsWalletReportingFlags:true,supportsWalletLocationName:true,supportsWalletTags:true,supportsWalletDiscount:true,supportsWalletPictures:true});
  if(unsupported.length){
   showConfirm(`以下内容暂无法自动带入钱包记账：${unsupported.join('、')}。切过去后可在钱包页重新填写，要继续切换吗？`, navigateToWallet, undefined, { title: '切换到钱包记账', confirmText: '继续切换', cancelText: '留在当前页', raw: true });
   return;
@@ -1049,11 +1065,183 @@ const quickCategoryId = computed({
 });
 function applyDefaultAccount(){if(mode.value!==TransactionEditPageMode.Add||debtMode.value)return;const ordinaryAccounts=allVisibleAccounts.value.filter(a=>a.category!==5&&a.category!==6);const candidate=ordinaryAccounts.length?ordinaryAccounts:allVisibleAccounts.value;transaction.value.sourceAccountId=resolveEntryAccount(transaction.value.sourceAccountId,explicitSourceAccount.value,experience.preferences.defaultAccountId,quickCategoryId.value,experience.preferences.categoryAccounts,experience.lastAccountId,candidate,experience.preferences.multiCurrency);}
 let remarksGeneration=0;
-async function loadRemarks(){const version=++remarksGeneration;historicalRemarks.value=[];if(!experience.preferences.historicalRemarks||!quickCategoryId.value)return;try{const response=await services.getTransactions({bookIds:[],maxTime:getCurrentUnixTime()+1,minTime:0,count:100,page:1,withCount:false,type:transaction.value.type,categoryIds:quickCategoryId.value,accountIds:'',tagFilter:'',amountFilter:'',keyword:'',matchMode:0});if(version===remarksGeneration&&response.data.success)historicalRemarks.value=[...new Set(response.data.result.items.map(item=>item.comment).filter(Boolean))].slice(0,30);}catch{/* Suggestions must not prevent manual entry. */}}
+async function loadRemarks(){const version=++remarksGeneration;historicalRemarks.value=[];if(!experience.preferences.historicalRemarks||!quickCategoryId.value)return;try{const response=await services.getTransactions({bookIds:[],maxTime:getCurrentUnixTime()+1,minTime:0,count:50,page:1,withCount:false,type:transaction.value.type,categoryIds:quickCategoryId.value,accountIds:'',tagFilter:'',amountFilter:'',keyword:'',matchMode:0});if(version===remarksGeneration&&response.data.success)historicalRemarks.value=[...new Set(response.data.result.items.map(item=>item.comment).filter(Boolean))].slice(0,30);}catch{/* Suggestions must not prevent manual entry. */}}
 watch(quickCategoryId,()=>{if(!loading.value){applyDefaultAccount();void loadRemarks();}});
 watch(() => transaction.value, () => {
     if (canUseQuickEntry.value && !transaction.value.bookId) transaction.value.bookId = booksStore.defaultBookId;
 });
+
+const isOrdinaryEntryMode = computed(() => !debtMode.value && [TransactionType.Expense, TransactionType.Income].includes(transaction.value.type));
+const canToggleEntryCurrency = computed(() => isOrdinaryEntryMode.value && isToggleableAccountCurrency(sourceAccountCurrency.value));
+const activeEntryCurrency = computed(() => canToggleEntryCurrency.value && isToggleableAccountCurrency(entryCurrency.value) ? entryCurrency.value : sourceAccountCurrency.value);
+const isCrossCurrency = computed(() => canToggleEntryCurrency.value && activeEntryCurrency.value !== sourceAccountCurrency.value);
+const activeUsdCnyRate = computed(() => {
+    if (!isCrossCurrency.value) return null;
+    if (lockedFx.value) return { rate: lockedFx.value.rate, date: lockedFx.value.date, source: 'historical' };
+    return resolveUsdCnyRate(accountSummary.value, exchangeRatesStore.latestExchangeRates.data, ledgerScope.timeZone);
+});
+const conversionPreview = computed(() => {
+    if (!isCrossCurrency.value) return '';
+    if (!activeUsdCnyRate.value) return fxFetching.value ? '正在获取参考汇率…' : '';
+    const acctCurr = sourceAccountCurrency.value as SupportedEntryCurrency;
+    const entryCurr = activeEntryCurrency.value as SupportedEntryCurrency;
+    const previewRaw = livePreviewAmount.value;
+    if (!previewRaw) return `当前参考汇率 1 USD = ${activeUsdCnyRate.value.rate} CNY`;
+    const dec = new EntryMoney(previewRaw);
+    if (dec.isZero()) return `当前参考汇率 1 USD = ${activeUsdCnyRate.value.rate} CNY`;
+    const converted = convertEntryAmount(previewRaw, entryCurr, acctCurr, activeUsdCnyRate.value.rate);
+    if (!converted) return '';
+    return `按汇率 ${activeUsdCnyRate.value.rate} 折合 ${formatEntryCurrencySymbol(acctCurr)}${ledgerMoney(converted.accountAmount, false)} 计入账户`;
+});
+const conversionError = computed(() => {
+    if (!isCrossCurrency.value) return '';
+    if (!activeUsdCnyRate.value) return fxFetching.value ? '正在获取参考汇率，请稍候' : '暂无可用汇率，请联网刷新后重试或切回原币种记账';
+    const previewRaw = livePreviewAmount.value;
+    if (previewRaw) {
+        const dec = new EntryMoney(previewRaw);
+        if (dec.lt(0)) return '切换币种记账仅支持正数金额';
+        if (dec.gt(0)) {
+            const converted = convertEntryAmount(previewRaw, activeEntryCurrency.value as SupportedEntryCurrency, sourceAccountCurrency.value as SupportedEntryCurrency, activeUsdCnyRate.value.rate);
+            if (!converted || converted.accountCents <= 0) return '折算后金额不足最小入账单位，请调整金额';
+        }
+    }
+    return '';
+});
+const quickCanSave = computed(() => {
+    if (inputIsEmpty.value) return false;
+    if (isCrossCurrency.value) return entryAmount.value > 0 && !conversionError.value;
+    return transaction.value.sourceAmount !== 0;
+});
+
+function clearOriginalCurrencyFields(): void {
+    transaction.value.originalCurrency = '';
+    transaction.value.originalAmount = '';
+    transaction.value.originalExchangeRate = '';
+    transaction.value.originalFXDate = '';
+}
+function syncCrossCurrencyFields(): void {
+    if (!isCrossCurrency.value) {
+        clearOriginalCurrencyFields();
+        return;
+    }
+    if (entryAmount.value <= 0 || !activeUsdCnyRate.value) {
+        transaction.value.sourceAmount = 0;
+        clearOriginalCurrencyFields();
+        return;
+    }
+    const entryStr = new EntryMoney(entryAmount.value).div(100).toString();
+    const converted = convertEntryAmount(
+        entryStr,
+        activeEntryCurrency.value as SupportedEntryCurrency,
+        sourceAccountCurrency.value as SupportedEntryCurrency,
+        activeUsdCnyRate.value.rate
+    );
+    if (!converted) {
+        transaction.value.sourceAmount = 0;
+        clearOriginalCurrencyFields();
+        return;
+    }
+    transaction.value.sourceAmount = converted.accountCents;
+    transaction.value.originalCurrency = activeEntryCurrency.value;
+    transaction.value.originalAmount = converted.originalAmount;
+    transaction.value.originalExchangeRate = activeUsdCnyRate.value.rate;
+    transaction.value.originalFXDate = activeUsdCnyRate.value.date || ledgerScope.currentDay || '';
+}
+const quickEntryAmount = computed({
+    get: () => isCrossCurrency.value ? entryAmount.value : transaction.value.sourceAmount,
+    set: (value: number) => {
+        entryAmount.value = value;
+        if (isCrossCurrency.value) {
+            syncCrossCurrencyFields();
+        } else {
+            transaction.value.sourceAmount = value;
+            clearOriginalCurrencyFields();
+        }
+    }
+});
+async function ensureExchangeRateLoaded(): Promise<void> {
+    if (activeUsdCnyRate.value || fxFetching.value) return;
+    fxFetching.value = true;
+    try {
+        await Promise.allSettled([
+            investments.summary().then(s => { accountSummary.value = s; }),
+            exchangeRatesStore.getLatestExchangeRates({ silent: true, force: false })
+        ]);
+    } finally {
+        fxFetching.value = false;
+        syncCrossCurrencyFields();
+    }
+}
+function toggleEntryCurrency(): void {
+    if (!canToggleEntryCurrency.value) return;
+    const currentValue = isCrossCurrency.value ? entryAmount.value : transaction.value.sourceAmount;
+    const nextCurrency = toggleAccountCurrency(activeEntryCurrency.value as SupportedEntryCurrency);
+    lockedFx.value = null;
+    entryCurrency.value = nextCurrency;
+    entryAmount.value = currentValue;
+    if (nextCurrency === sourceAccountCurrency.value) {
+        transaction.value.sourceAmount = currentValue;
+        clearOriginalCurrencyFields();
+    } else {
+        syncCrossCurrencyFields();
+        if (!activeUsdCnyRate.value) {
+            void ensureExchangeRateLoaded();
+        }
+    }
+}
+function initEntryCurrencyState(): void {
+    initializingEntry.value = true;
+    const t = transaction.value;
+    if (
+        isOrdinaryEntryMode.value &&
+        t.originalCurrency &&
+        t.originalAmount &&
+        t.originalExchangeRate &&
+        t.originalCurrency !== sourceAccountCurrency.value &&
+        isToggleableAccountCurrency(sourceAccountCurrency.value) &&
+        isToggleableAccountCurrency(t.originalCurrency)
+    ) {
+        entryCurrency.value = t.originalCurrency;
+        entryAmount.value = new EntryMoney(t.originalAmount).mul(100).toNumber();
+        if (mode.value === TransactionEditPageMode.Edit) {
+            lockedFx.value = { rate: t.originalExchangeRate, date: t.originalFXDate || '' };
+        } else {
+            lockedFx.value = null;
+            syncCrossCurrencyFields();
+            if (!activeUsdCnyRate.value) void ensureExchangeRateLoaded();
+        }
+    } else {
+        entryCurrency.value = sourceAccountCurrency.value;
+        entryAmount.value = t.sourceAmount;
+        lockedFx.value = null;
+        clearOriginalCurrencyFields();
+    }
+    initializingEntry.value = false;
+}
+watch(() => [transaction.value.sourceAccountId, sourceAccountCurrency.value], (next, prev) => {
+    if (loading.value || initializingEntry.value || (prev && next[0] === prev[0] && next[1] === prev[1])) return;
+    const currentValue = isCrossCurrency.value ? entryAmount.value : transaction.value.sourceAmount;
+    lockedFx.value = null;
+    entryCurrency.value = sourceAccountCurrency.value;
+    entryAmount.value = currentValue;
+    transaction.value.sourceAmount = currentValue;
+    clearOriginalCurrencyFields();
+}, { flush: 'sync' });
+watch(isOrdinaryEntryMode, ordinary => {
+    if (loading.value || initializingEntry.value || ordinary) return;
+    if (entryCurrency.value !== sourceAccountCurrency.value) {
+        const currentValue = entryAmount.value;
+        lockedFx.value = null;
+        entryCurrency.value = sourceAccountCurrency.value;
+        transaction.value.sourceAmount = currentValue;
+        clearOriginalCurrencyFields();
+    }
+}, { flush: 'sync' });
+watch(activeUsdCnyRate, () => {
+    if (!loading.value && !initializingEntry.value && isCrossCurrency.value) {
+        syncCrossCurrencyFields();
+    }
+}, { flush: 'sync' });
 
 const quickSaveButtonStyleType = computed<number>(() => settingsStore.appSettings.quickSaveButtonStyleInMobileTransactionListPage);
 const quickSaveButtonFloatingPosition = computed<string>(() => {
@@ -1463,6 +1651,7 @@ function init(): void {
 
         loading.value = false;
         if(!fromTransaction)applyDefaultAccount();void loadRemarks();
+        initEntryCurrencyState();
 
     }).catch(error => {
         logger.error('failed to load essential data for editing transaction', error);
@@ -1480,6 +1669,7 @@ function save(afterAction: AfterSaveAction): void {
     const router = props.f7router;
 
     if (useQuickEntry.value && quickEntry.value && !quickEntry.value.prepareSave()) return;
+    if (isCrossCurrency.value && conversionError.value) { showAlert(conversionError.value); return; }
     if (canRecordDiscount.value && !/^(0|[1-9]\d{0,12})(\.\d{1,2})?$/.test(transaction.value.discountAmount || '0')) { showAlert('优惠金额格式无效，请重新填写。'); return; }
 
     if (debtMode.value && debtValidationMessage.value) { showAlert(debtValidationMessage.value); return; }
@@ -1531,6 +1721,7 @@ function save(afterAction: AfterSaveAction): void {
                     const savedSource = transaction.value.sourceAccountId;
                     const savedDest = transaction.value.destinationAccountId;
                     const savedTransferCat = transaction.value.transferCategoryId;
+                    initializingEntry.value = true;
                     updateTransactionModelByAfterSaveAction(afterAction, { ...getQueryTransactionOptions(), type: savedType });
                     transaction.value.bookId = savedBookId;
                     if (wasManualDate) {
@@ -1549,6 +1740,7 @@ function save(afterAction: AfterSaveAction): void {
                             transaction.value.destinationAccountId = pickDistinctDestination(transaction.value.sourceAccountId);
                         }
                     }
+                    initEntryCurrencyState();
                     clientSessionId.value = generateRandomUUID();
                 } else {
                     if (mode.value === TransactionEditPageMode.Add) {

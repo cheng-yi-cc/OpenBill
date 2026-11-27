@@ -140,6 +140,10 @@ type Transaction struct {
 	ReimbursementReceiptId string            `xorm:"VARCHAR(64) NOT NULL DEFAULT ''"`
 	BookId                 string            `xorm:"VARCHAR(64) NOT NULL DEFAULT '' INDEX(IDX_transaction_book)"`
 	InvestmentEventId      string            `xorm:"VARCHAR(64) NOT NULL DEFAULT ''"`
+	OriginalCurrency       string            `xorm:"VARCHAR(10) NOT NULL DEFAULT ''"`
+	OriginalAmount         string            `xorm:"VARCHAR(32) NOT NULL DEFAULT ''"`
+	OriginalExchangeRate   string            `xorm:"VARCHAR(32) NOT NULL DEFAULT ''"`
+	OriginalFXDate         string            `xorm:"VARCHAR(10) NOT NULL DEFAULT ''"`
 	TransactionId          int64             `xorm:"PK"`
 	Uid                    int64             `xorm:"UNIQUE(UQE_transaction_uid_time) INDEX(IDX_transaction_uid_deleted_time) INDEX(IDX_transaction_uid_deleted_type_time) INDEX(IDX_transaction_uid_deleted_type_account_id_time) INDEX(IDX_transaction_uid_deleted_category_id_time) INDEX(IDX_transaction_uid_deleted_account_id_time) INDEX(IDX_transaction_uid_deleted_time_longitude_latitude) NOT NULL"`
 	Deleted                bool              `xorm:"INDEX(IDX_transaction_uid_deleted_time) INDEX(IDX_transaction_uid_deleted_type_time) INDEX(IDX_transaction_uid_deleted_type_account_id_time) INDEX(IDX_transaction_uid_deleted_category_id_time) INDEX(IDX_transaction_uid_deleted_account_id_time) INDEX(IDX_transaction_uid_deleted_time_longitude_latitude) NOT NULL"`
@@ -213,6 +217,10 @@ type TransactionCreateRequest struct {
 	ExcludeFromBudget      *bool                          `json:"excludeFromBudget"`
 	ReimbursementAccountId int64                          `json:"reimbursementAccountId,string" binding:"min=0"`
 	BookId                 string                         `json:"bookId" binding:"max=64"`
+	OriginalCurrency       string                         `json:"originalCurrency" binding:"omitempty,max=10"`
+	OriginalAmount         string                         `json:"originalAmount" binding:"omitempty,max=32"`
+	OriginalExchangeRate   string                         `json:"originalExchangeRate" binding:"omitempty,max=32"`
+	OriginalFXDate         string                         `json:"originalFXDate" binding:"omitempty,max=10"`
 	Type                   TransactionType                `json:"type" binding:"required"`
 	CategoryId             int64                          `json:"categoryId,string"`
 	Time                   int64                          `json:"time" binding:"required,min=1"`
@@ -242,6 +250,10 @@ type TransactionModifyRequest struct {
 	ExcludeFromBudget      *bool                          `json:"excludeFromBudget"`
 	ReimbursementAccountId *int64                         `json:"reimbursementAccountId,string" binding:"omitempty,min=0"`
 	BookId                 string                         `json:"bookId" binding:"max=64"`
+	OriginalCurrency       *string                        `json:"originalCurrency" binding:"omitempty,max=10"`
+	OriginalAmount         *string                        `json:"originalAmount" binding:"omitempty,max=32"`
+	OriginalExchangeRate   *string                        `json:"originalExchangeRate" binding:"omitempty,max=32"`
+	OriginalFXDate         *string                        `json:"originalFXDate" binding:"omitempty,max=10"`
 	Id                     int64                          `json:"id,string" binding:"required,min=1"`
 	Type                   TransactionType                `json:"type" binding:"required"`
 	CategoryId             int64                          `json:"categoryId,string"`
@@ -495,6 +507,10 @@ type TransactionInfoResponse struct {
 	ReimbursementReceiptId string                                   `json:"reimbursementReceiptId,omitempty"`
 	BookId                 string                                   `json:"bookId"`
 	InvestmentEventId      string                                   `json:"investmentEventId,omitempty"`
+	OriginalCurrency       string                                   `json:"originalCurrency,omitempty"`
+	OriginalAmount         string                                   `json:"originalAmount,omitempty"`
+	OriginalExchangeRate   string                                   `json:"originalExchangeRate,omitempty"`
+	OriginalFXDate         string                                   `json:"originalFXDate,omitempty"`
 	Id                     int64                                    `json:"id,string"`
 	TimeSequenceId         int64                                    `json:"timeSequenceId,string"`
 	Type                   TransactionType                          `json:"type"`
@@ -757,6 +773,10 @@ func (t *Transaction) ToTransactionInfoResponse(tagIds []int64, editable bool) *
 		DebtDueDate: t.DebtDueDate, LocationName: t.LocationName, LocationAddress: t.LocationAddress, LinkedTransactionIds: t.LinkedTransactionIds,
 		DiscountAmount:         t.DiscountAmount,
 		InvestmentEventId:      t.InvestmentEventId,
+		OriginalCurrency:       t.OriginalCurrency,
+		OriginalAmount:         t.OriginalAmount,
+		OriginalExchangeRate:   t.OriginalExchangeRate,
+		OriginalFXDate:         t.OriginalFXDate,
 		Id:                     t.TransactionId,
 		TimeSequenceId:         t.TransactionTime,
 		Type:                   transactionType,

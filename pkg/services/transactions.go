@@ -1170,6 +1170,10 @@ func (s *TransactionService) modifyTransaction(c core.Context, transaction *mode
 		if transaction.Type == models.TRANSACTION_DB_TYPE_TRANSFER_OUT && (transaction.Amount < 0 || transaction.RelatedAccountAmount < 0) {
 			return errs.ErrTransferTransactionAmountCannotBeLessThanZero
 		}
+		if err := validateTransactionOriginalCurrency(transaction, sourceAccount); err != nil {
+			return err
+		}
+		updateCols = append(updateCols, "original_currency", "original_amount", "original_exchange_rate", "original_fx_date")
 
 		oldSourceAccount, oldDestinationAccount, err := s.getOldAccountModels(sess, transaction, oldTransaction, sourceAccount, destinationAccount)
 
@@ -3249,6 +3253,9 @@ func (s *TransactionService) doCreateTransaction(c core.Context, database *datas
 	if (transaction.Type == models.TRANSACTION_DB_TYPE_TRANSFER_OUT || transaction.Type == models.TRANSACTION_DB_TYPE_TRANSFER_IN) &&
 		(transaction.Amount < 0 || transaction.RelatedAccountAmount < 0) {
 		return errs.ErrTransferTransactionAmountCannotBeLessThanZero
+	}
+	if err := validateTransactionOriginalCurrency(transaction, sourceAccount); err != nil {
+		return err
 	}
 
 	// Get and verify category
