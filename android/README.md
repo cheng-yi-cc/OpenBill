@@ -57,7 +57,7 @@ adb -s <手机序列号> install --no-incremental -r .\dist\android\OpenBill-And
 adb -s <手机序列号> shell am start -n com.cyledger.android/com.cyledger.android.MainActivity
 ```
 
-系统出现 USB 安装提示时需在手机上允许。**必须保留同一签名并覆盖安装，不能先卸载正式版或清除其数据。**
+系统出现 USB 安装提示时需在手机上允许。**必须保留同一签名并覆盖安装，不能先卸载正式版或清除其数据。** 正式版亦支持在「设置 → 关于 OpenBill → 检查更新」检测由 `.github/workflows/release-android.yml` 发布的同签名 GitHub Release，完成 `.sha256` 校验后调用 `PackageInstaller` 原位覆盖升级。
 
 私密签名密钥与密码在 `.runtime/android-signing/`，须长期保留并另行妥善备份，不能作为构建临时文件清理或提交仓库。丢失或更换密钥将无法直接覆盖升级已安装应用。
 

@@ -12,6 +12,7 @@
 - Framework7 页面根节点不要用异步变化的 `class` 切换业务样式，避免覆盖路由状态；可改用独立 `data-*` 属性。
 - 系统结算账户必须在旧接口、批量操作、账户合并、普通列表和资产汇总中受保护。
 - 钱包收支复用投资事件，在同一事务更新实际币种持仓及一笔人民币统计账单；系统账单不重复计入资产，原币展示来自原事件，禁止普通账单接口单独改删。已支持标签、地点名称、附件、优惠金额及收支/预算/隐藏开关，尚不支持报销、地图坐标和自动跨币换算。账户单位切换不得重写历史币种，普通资金账户须由 `account_currency.go` 复核可改条件。
+- 普通资金账户收支支持点击币种符号无动画切换 CNY/USD，按系统汇率自动折算入账并在 Transaction.OriginalCurrency/OriginalAmount/OriginalExchangeRate/OriginalFXDate 持久化（由 pkg/services/transaction_currency.go 校验，不提供手动改汇率）；Android 正式版应用内更新由 AppUpdater/UpdateInstallReceiver 经原生 HTTPS 检索 GitHub Releases 并校验 .sha256 与包名后通过 PackageInstaller 原位升级，WebView 仍禁止加载外部网页。
 - 稳定币每枚约 1 美元只能用于可修改的收付数量预填，不能作为行情或历史汇率；手动价格保留原币，历史快照重建沿用原有价格与汇率。
 - 不记录密钥或完整财务数据，不把 `.runtime`、`runtime`、备份和测试令牌提交到仓库。
 - 报销到账、债务本金/利息、余额校准、分期费用与定存收益必须在对应服务中原子提交并防重；定存和分期不能再次增加本金，普通行情不能驱动这些入账。

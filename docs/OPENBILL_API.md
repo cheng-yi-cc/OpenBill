@@ -16,7 +16,7 @@
 
 原有 `POST /transactions/import.json` 请求可附 `batchId`（最多 64 字符）及 `sourceName`（最多 128 字符）；重试保持同一 ID 和内容。批次入账、指纹和交易 ID 在同一事务保存。撤回后保留防重身份，该 ID 不得再次导入。
 
-普通账单请求/响应增加 `transferFeeAmount`（最多两位小数的带符号字符串）、`transferFeeCategoryId`、`debtDueDate`（YYYY-MM-DD 或空串）、`locationName`（最多 200 字）、`locationAddress`（最多 500 字）和 `linkedTransactionIds`（最多 20 个同用户非自身有效账单 ID）。`transferFeeParentId` 仅由响应返回关联的原转账 ID。手续费仅适用于转出账单，正数选支出分类、负数选收入分类；关联费用不能单独编辑。约定日期只支持借入/借出，响应的日历事项含 `transactionId`；提醒变更请修改原账单。修改请求省略扩展字段则保留旧值，清空日期须显式传空串。模型定义仍是完整字段与约束的依据。
+普通账单请求/响应增加 `transferFeeAmount`（最多两位小数的带符号字符串）、`transferFeeCategoryId`、`debtDueDate`（YYYY-MM-DD 或空串）、`locationName`（最多 200 字）、`locationAddress`（最多 500 字）和 `linkedTransactionIds`（最多 20 个同用户非自身有效账单 ID）；另增加跨币录入字段 `originalCurrency`（`"CNY"` 或 `"USD"`，须与账户币种互异）、`originalAmount`（正十进制字符串，最多两位小数）、`originalExchangeRate`（正十进制字符串，1 USD 兑 CNY 汇率）和 `originalFXDate`（`YYYY-MM-DD`）。`transferFeeParentId` 仅由响应返回关联的原转账 ID。手续费仅适用于转出账单，正数选支出分类、负数选收入分类；关联费用不能单独编辑。约定日期只支持借入/借出，响应的日历事项含 `transactionId`；提醒变更请修改原账单。原币字段仅适用于普通收入/支出，服务端在 `pkg/services/transaction_currency.go` 用十进制校验折算后的入账分值，改为非收支类型时自动清空。修改请求省略扩展字段（或指针字段）则保留旧值，清空日期须显式传空串。模型定义仍是完整字段与约束的依据。
 
 愿望保存示例（`POST /ledger/items/save`，不产生资金流水）：
 

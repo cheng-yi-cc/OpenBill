@@ -4,7 +4,7 @@
 
 ## 安装和本地预览
 
-在项目根执行 `python scripts/build_android.py`，正式产物为 `dist/android/OpenBill-Android-arm64.apk`。使用 `adb install -r dist/android/OpenBill-Android-arm64.apk` 同签名覆盖升级，手机打开 **OpenBill**。测试用 `--qa` 构建独立 **OpenBill 测试**，正式数据与测试数据隔离。
+在项目根执行 `python scripts/build_android.py`，正式产物为 `dist/android/OpenBill-Android-arm64.apk`。使用 `adb install -r dist/android/OpenBill-Android-arm64.apk` 同签名覆盖升级，手机打开 **OpenBill**。测试用 `--qa` 构建独立 **OpenBill 测试**，正式数据与测试数据隔离。推送 `vX.Y.Z` 标签可由 `.github/workflows/release-android.yml` 自动发布同签名 Release 与 `.sha256`；正式版也可在「设置 → 关于 OpenBill → 检查更新」原位升级（支持浏览器打开 Release 页兜底）。
 
 从 CYLedger 升级时，保留包名 `com.cyledger.android`、签名、数据库路径 `files/ledger/data/cyledger.db`、原生桥和备份格式身份。这些兼容标识不展示为应用名称。`.runtime/android-signing/` 中的密钥和密码必须长期保存，不得提交仓库、重新生成或作为临时文件清理。
 
@@ -23,5 +23,6 @@
 | 动画关闭 | OpenBill 遵循系统动画开关，静态开屏仍可正常进入 |
 | 行情失败 | 核对网络、供应商与可选中转；缺失值保持未知，不影响离线记账 |
 | 恢复失败 | 保留原文件及账本，查看校验错误，不能通过卸载排错 |
+| 应用内更新失败或下载缓慢 | 核对网络与「允许安装未知应用」权限，或点击弹窗/关于页中的浏览器入口前往 GitHub Releases 手动下载同签名 APK 安装 |
 
 可选行情中转是公开报价辅助服务，配置见 [行情网络](OPENBILL_MARKET_NETWORK.md)，不承载用户账本。应用不提供电脑界面、电脑备份或 Docker 账本部署。

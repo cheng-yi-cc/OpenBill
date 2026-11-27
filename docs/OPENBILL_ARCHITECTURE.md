@@ -25,7 +25,7 @@ Android WebView 中的 Vue 界面
 | `CalendarEvent` | 手动或借款账单关联的到期事项，完成状态不产生现金流水 |
 | `LocalLedgerItem` | 愿望、关键词规则、永久幂等的导入批次；不是第二份账户余额 |
 | `StatisticsBudget` / `StatisticsNote` / `StatisticsPreference` | 预算规则、账本与周期总结、各周期模块顺序及预算口径；修订号避免并发覆盖 |
-| `Transaction.DiscountAmount` / `LocationAddress` / `LinkedTransactionIds` / `BudgetExclusionMode` / `TransactionTag.ParentTagId` | 原币优惠、详细地址、手动关联账单、预算独立排除状态、两级标签；优惠不改实收付 |
+| `Transaction.DiscountAmount` / `LocationAddress` / `LinkedTransactionIds` / `BudgetExclusionMode` / `OriginalCurrency` / `OriginalAmount` / `OriginalExchangeRate` / `OriginalFXDate` / `TransactionTag.ParentTagId` | 原币优惠、详细地址、手动关联账单、预算独立排除状态、普通收支跨币录入原币与系统汇率快照（由 `pkg/services/transaction_currency.go` 校验）、两级标签；优惠不改实收付 |
 | `Refund` | 独立退款事实、关联原支出与退款流水、`offset`/`reduce` 分期协同模式、超额属性与请求幂等 |
 | `Account.Extend.AssetProfile` | 类型、分组、简称、卡号、夜间图标、资产统计选择、信用规则与借款日期；没有第二份余额 |
 | `AssetPresentation` | 隐藏、生效账本和提醒偏好，带修订号 |
@@ -183,7 +183,7 @@ Android `LocalBridge` 只允许本机页面且解锁后发起操作。备份同�
 
 ## Android 运行与品牌资源
 
-Android 通过 JNI 在应用进程内运行相同后端，正式/QA 分别使用回环端口 18761/18762 和各自私有目录。个人会话仅由原生外壳交给本应用 WebView；正式包禁用调试和注册。`ReminderBridge`/`ReminderReceiver` 处理资产提醒，`DailyReminderReceiver` 处理每日记账提醒，`DcaScheduler`/`DcaCheckJobService`/`DcaAlarmReceiver`/`DcaNotifier` 处理定投定时提醒与唤醒检查，`LedgerTileService` 打开手动记账；这些入口不能代替后台常驻服务。
+Android 通过 JNI 在应用进程内运行相同后端，正式/QA 分别使用回环端口 18761/18762 和各自私有目录。个人会话仅由原生外壳交给本应用 WebView；正式包禁用调试和注册。`ReminderBridge`/`ReminderReceiver` 处理资产提醒，`DailyReminderReceiver` 处理每日记账提醒，`DcaScheduler`/`DcaCheckJobService`/`DcaAlarmReceiver`/`DcaNotifier` 处理定投定时提醒与唤醒检查，`LedgerTileService` 打开手动记账；这些入口不能代替后台常驻服务。`AppUpdater` 与 `UpdateInstallReceiver` 通过原生 HTTPS 检查 GitHub Releases、校验 `.sha256` 摘要与包名，并在授权后调用 `PackageInstaller` 执行同签名原位覆盖升级；WebView 仍拦截外部网页加载。
 
 `MainActivity` 在 WebView 上覆盖原生 `OpenBillSplash`，账页展开及 O 圆弧动画与后端启动并行；检测到 Framework7 当前页面就绪后按统一缓动淡出，失败时显示重试入口。前端动效与无障碍降级由 `src/lib/motion.ts` 和 `src/styles/mobile/_motion.scss` 统一控制，同时尊重系统 `prefers-reduced-motion` 与应用内动态开关。Android 12 及以上使用透明系统占位图，由原生视图统一绘制品牌。图标源为 `public/img/openbill.svg`，Android 自适应图标与单色图标位于 `android/app/src/main/res/`。
 
