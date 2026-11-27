@@ -2,15 +2,17 @@
 """Build the offline Android APK using the installed Android SDK, NDK and Go."""
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import subprocess
-import zipfile
-import ipaddress
+import sys
 from urllib.parse import urlsplit
+import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -21,10 +23,85 @@ def run(arguments, *, env=None):
 
 
 def latest(directory, pattern):
-    candidates = list(directory.glob(pattern))
+    candidates = [path for path in directory.glob(pattern) if not path.name.startswith(".")]
     if not candidates:
         raise SystemExit(f"Required development dependency not found in {directory}")
-    return max(candidates, key=lambda path: tuple(int(v) for v in path.name.replace("android-", "").split(".") if v.isdigit()))
+    return max(candidates, key=lambda path: tuple(int(part) for part in re.findall(r"\d+", path.name)))
+
+
+def default_sdk():
+    env_sdk = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+    if env_sdk:
+        return Path(env_sdk)
+    if sys.platform == "darwin":
+        return Path.home() / "Library/Android/sdk"
+    if sys.platform.startswith("linux"):
+        return Path.home() / "Android/Sdk"
+    return Path.home() / "AppData/Local/Android/Sdk"
+
+
+def default_ndk(sdk_path):
+    env_ndk = os.environ.get("ANDROID_NDK_HOME") or os.environ.get("ANDROID_NDK_ROOT")
+    if env_ndk:
+        return Path(env_ndk)
+    local_windows_ndk = Path("D:/tools/cyledger/android-sdk/ndk/28.2.13676358")
+    if local_windows_ndk.is_dir():
+        return local_windows_ndk
+    ndk_root = sdk_path / "ndk"
+    if ndk_root.is_dir():
+        return latest(ndk_root, "*")
+    return local_windows_ndk
+
+
+def host_ndk_clang(ndk_path):
+    if sys.platform == "win32":
+        candidates = ["windows-x86_64/bin/aarch64-linux-android26-clang.cmd"]
+    elif sys.platform == "darwin":
+        candidates = [
+            "darwin-arm64/bin/aarch64-linux-android26-clang",
+            "darwin-x86_64/bin/aarch64-linux-android26-clang",
+        ]
+    else:
+        candidates = ["linux-x86_64/bin/aarch64-linux-android26-clang"]
+    for rel in candidates:
+        candidate = ndk_path / "toolchains/llvm/prebuilt" / rel
+        if candidate.is_file():
+            return candidate
+    return ndk_path / "toolchains/llvm/prebuilt" / candidates[0]
+
+
+def tool_executable(tools_dir, name):
+    suffixes = (".exe", ".bat", ".cmd", "") if sys.platform == "win32" else ("",)
+    for suffix in suffixes:
+        candidate = tools_dir / f"{name}{suffix}"
+        if candidate.is_file():
+            return candidate
+    raise SystemExit(f"Required Android build-tool '{name}' not found in {tools_dir}")
+
+
+def resolve_version(tag=None, version_name=None, version_code=None):
+    resolved_name = version_name
+    resolved_code = version_code
+    if tag:
+        clean_tag = tag.strip()
+        if clean_tag.startswith("v"):
+            clean_tag = clean_tag[1:]
+        if not resolved_name:
+            resolved_name = clean_tag
+    if not resolved_name:
+        resolved_name = "0.3.0"
+    if resolved_code is None:
+        if tag or version_name:
+            match = re.match(r"^(\d+)\.(\d+)\.(\d+)", resolved_name)
+            if not match:
+                raise SystemExit(f"Cannot derive versionCode from versionName '{resolved_name}'; pass --version-code")
+            major, minor, patch = (int(part) for part in match.groups())
+            resolved_code = max(4, major * 10000 + minor * 100 + patch)
+        else:
+            resolved_code = 4
+    if resolved_code < 1:
+        raise SystemExit("--version-code must be a positive integer")
+    return resolved_name, resolved_code
 
 
 def market_network_bytes(path):
@@ -59,21 +136,34 @@ def main():
     parser.add_argument("--qa", action="store_true", help="Separate app/data, with WebView debugging")
     parser.add_argument("--skip-frontend", action="store_true", help="Package an already built dist directory")
     parser.add_argument("--skip-backend", action="store_true", help="Reuse already built native libraries")
-    parser.add_argument("--sdk", type=Path, default=Path(os.environ.get("ANDROID_HOME", str(Path.home() / "AppData/Local/Android/Sdk"))))
-    parser.add_argument("--ndk", type=Path, default=Path("D:/tools/cyledger/android-sdk/ndk/28.2.13676358"))
+    parser.add_argument("--sdk", type=Path, default=None, help="Android SDK path")
+    parser.add_argument("--ndk", type=Path, default=None, help="Android NDK path")
+    parser.add_argument("--tag", help="Release git tag (e.g. v0.3.0) used to derive versionName/versionCode")
+    parser.add_argument("--version-name", help="Android versionName (defaults to tag or 0.3.0)")
+    parser.add_argument("--version-code", type=int, help="Android versionCode (defaults to tag-derived or 4)")
+    parser.add_argument("--require-existing-keystore", action="store_true",
+                        help="Fail instead of generating a new keystore when signing files are missing")
     parser.add_argument("--market-network", type=Path, help="Private JSON with relayUrl/relayToken; do not commit it")
     args = parser.parse_args()
+    version_name, version_code = resolve_version(args.tag, args.version_name, args.version_code)
+    sdk_path = args.sdk or default_sdk()
+    ndk_path = args.ndk or default_ndk(sdk_path)
     market_network = market_network_bytes(args.market_network)
-    tools = latest(args.sdk / "build-tools", "*")
-    platform = latest(args.sdk / "platforms", "android-*") / "android.jar"
+    tools = latest(sdk_path / "build-tools", "*")
+    platform = latest(sdk_path / "platforms", "android-*") / "android.jar"
     go = shutil.which("go") or "D:/tools/cyledger/go/bin/go.exe"
     java = shutil.which("javac")
     keytool = shutil.which("keytool")
     if not java or not keytool or not platform.is_file():
         raise SystemExit("Java JDK and an Android platform SDK are required")
-    compiler = args.ndk / "toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android26-clang.cmd"
+    compiler = host_ndk_clang(ndk_path)
     if not compiler.is_file():
-        raise SystemExit("Install Android NDK 28.2.13676358, or provide --ndk")
+        raise SystemExit(f"Android NDK clang not found at {compiler}; provide --ndk or ANDROID_NDK_HOME")
+    aapt2 = tool_executable(tools, "aapt2")
+    d8 = tool_executable(tools, "d8")
+    zipalign = tool_executable(tools, "zipalign")
+    apksigner = tool_executable(tools, "apksigner")
+    npm_cmd = shutil.which("npm.cmd") or shutil.which("npm") or "npm"
     variant = "qa" if args.qa else "release"
     build = ROOT / ".runtime/android" / variant
     native = ROOT / ".runtime/android/native"
@@ -84,7 +174,7 @@ def main():
     for folder in (native, assets, resources, classes, dex):
         folder.mkdir(parents=True, exist_ok=True)
     if not args.skip_frontend:
-        run([shutil.which("npm.cmd") or "npm", "run", "build"])
+        run([npm_cmd, "run", "build"])
     if not (ROOT / "dist/mobile.html").is_file():
         raise SystemExit("Build the frontend first (npm run build)")
     if not args.skip_backend:
@@ -130,28 +220,30 @@ def main():
     manifest = build / "AndroidManifest.xml"
     manifest.write_text(manifest_text, encoding="utf-8")
     compiled_resources = build / "resources.zip"
-    run([tools / "aapt2.exe", "compile", "--dir", resources, "-o", compiled_resources])
+    run([aapt2, "compile", "--dir", resources, "-o", compiled_resources])
     unsigned = build / "unsigned.apk"
-    run([tools / "aapt2.exe", "link", "-o", unsigned, "--manifest", manifest,
-         "-I", platform, "-A", assets, "--version-code", "4", "--version-name", "0.3.0", compiled_resources])
+    run([aapt2, "link", "-o", unsigned, "--manifest", manifest,
+         "-I", platform, "-A", assets, "--version-code", str(version_code), "--version-name", version_name, compiled_resources])
     sources = sorted((ROOT / "android/app/src/main/java").rglob("*.java"))
     bootclasspath = os.pathsep.join([str(tools / "core-lambda-stubs.jar"), str(platform)])
     run([java, "-encoding", "UTF-8", "-source", "8", "-target", "8", "-bootclasspath", bootclasspath,
          "-d", classes, *sources])
     class_files = sorted(classes.rglob("*.class"))
-    run([tools / "d8.bat", "--min-api", "26", "--lib", platform, "--output", dex, *class_files])
+    run([d8, "--min-api", "26", "--lib", platform, "--output", dex, *class_files])
     with zipfile.ZipFile(unsigned, "a", zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(dex.glob("*.dex")):
             archive.write(path, path.name)
         for name in ("libcyledger_backend.so", "libcyledger_jni.so"):
             archive.write(native / name, "lib/arm64-v8a/" + name, compress_type=zipfile.ZIP_STORED)
     aligned = build / "aligned.apk"
-    run([tools / "zipalign.exe", "-f", "-P", "16", "4", unsigned, aligned])
+    run([zipalign, "-f", "-P", "16", "4", unsigned, aligned])
     signing = ROOT / ".runtime/android-signing"
     signing.mkdir(exist_ok=True)
     password_file = signing / "password.txt"
     keystore = signing / "cyledger.p12"
     if not keystore.exists():
+        if args.require_existing_keystore:
+            raise SystemExit(f"Existing keystore required but missing: {keystore}")
         password_file.write_text(secrets.token_hex(32), encoding="ascii")
         run([keytool, "-genkeypair", "-keystore", keystore, "-storetype", "PKCS12", "-alias", "cyledger",
              "-storepass:file", password_file, "-keypass:file", password_file,
@@ -161,11 +253,12 @@ def main():
     output = ROOT / "dist/android"
     output.mkdir(exist_ok=True)
     apk = output / ("OpenBill-Android-arm64-qa.apk" if args.qa else "OpenBill-Android-arm64.apk")
-    run([tools / "apksigner.bat", "sign", "--ks", keystore, "--ks-pass", "file:" + str(password_file),
+    run([apksigner, "sign", "--ks", keystore, "--ks-pass", "file:" + str(password_file),
          "--ks-key-alias", "cyledger", "--out", apk, aligned])
-    run([tools / "apksigner.bat", "verify", "--verbose", apk])
-    run([tools / "zipalign.exe", "-c", "-P", "16", "4", apk])
-    result = {"variant": variant, "applicationId": application_id, "apk": str(apk),
+    run([apksigner, "verify", "--verbose", apk])
+    run([zipalign, "-c", "-P", "16", "4", apk])
+    result = {"variant": variant, "applicationId": application_id, "versionName": version_name,
+              "versionCode": version_code, "apk": str(apk),
               "sha256": hashlib.sha256(apk.read_bytes()).hexdigest(), "bytes": apk.stat().st_size,
               "architecture": "arm64-v8a", "minimumAndroid": "8.0", "targetSdk": 36}
     (build / "build-result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

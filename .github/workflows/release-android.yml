@@ -1,0 +1,168 @@
+name: Release OpenBill Android
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to build and publish (e.g. v0.3.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-android-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOFLAGS: -mod=readonly
+    steps:
+      - name: Resolve release tag
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
+            echo "Invalid release tag: $TAG (expected vX.Y.Z)" >&2
+            exit 1
+          fi
+          PRERELEASE="false"
+          if [[ "$TAG" == *-* ]]; then
+            PRERELEASE="true"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install dependencies and run quick checks
+        run: |
+          npm ci
+          node node_modules/vue-tsc/bin/vue-tsc.js --noEmit
+          npm test
+          python3 scripts/test_market_network_config.py
+
+      - name: Restore Android signing keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          MARKET_NETWORK_JSON: ${{ secrets.MARKET_NETWORK_JSON }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ]; then
+            echo "Missing ANDROID_KEYSTORE_BASE64 or ANDROID_KEYSTORE_PASSWORD secret." >&2
+            exit 1
+          fi
+          mkdir -p .runtime/android-signing
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > .runtime/android-signing/cyledger.p12
+          printf '%s' "$ANDROID_KEYSTORE_PASSWORD" > .runtime/android-signing/password.txt
+          chmod 600 .runtime/android-signing/cyledger.p12 .runtime/android-signing/password.txt
+          if [ -n "$MARKET_NETWORK_JSON" ]; then
+            printf '%s' "$MARKET_NETWORK_JSON" > .runtime/market-network.json
+            chmod 600 .runtime/market-network.json
+            echo "MARKET_ARG=--market-network .runtime/market-network.json" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build signed Android release APK
+        run: |
+          python3 scripts/build_android.py \
+            --tag "${{ steps.meta.outputs.tag }}" \
+            --require-existing-keystore \
+            ${MARKET_ARG:-}
+          test -f dist/mobile.html && test ! -f dist/desktop.html
+          test -f dist/android/OpenBill-Android-arm64.apk
+          (cd dist/android && sha256sum OpenBill-Android-arm64.apk > OpenBill-Android-arm64.apk.sha256)
+
+      - name: Extract APK metadata for release notes
+        env:
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          from pathlib import Path
+
+          info = json.loads(Path(".runtime/android/release/build-result.json").read_text(encoding="utf-8"))
+          apk = Path(info["apk"])
+          sdk = Path(os.environ["ANDROID_HOME"])
+          tools_dir = max(
+              (sdk / "build-tools").glob("*"),
+              key=lambda p: tuple(int(x) for x in re.findall(r"\d+", p.name)),
+          )
+          apksigner = tools_dir / "apksigner"
+          certs = subprocess.check_output([str(apksigner), "verify", "--print-certs", str(apk)], text=True)
+          cert_sha256 = ""
+          for line in certs.splitlines():
+              if "SHA-256 digest:" in line:
+                  cert_sha256 = line.split("SHA-256 digest:", 1)[1].strip()
+                  break
+          notes = [
+              f"## OpenBill Android {info['versionName']} (`{os.environ['RELEASE_TAG']}`)",
+              "",
+              f"- **包名**：`{info['applicationId']}`",
+              f"- **版本**：`{info['versionName']}` (`versionCode={info['versionCode']}`)",
+              f"- **架构与系统要求**：`{info['architecture']}`，Android {info['minimumAndroid']}+ (`targetSdk {info['targetSdk']}`)",
+              f"- **文件大小**：`{info['bytes']:,}` bytes",
+              f"- **APK SHA-256**：`{info['sha256']}`",
+          ]
+          if cert_sha256:
+              notes.append(f"- **签名证书 SHA-256**：`{cert_sha256}`")
+          Path(".runtime/release-notes.md").write_text("\n".join(notes) + "\n", encoding="utf-8")
+          PY
+
+      - name: Cleanup sensitive signing materials
+        if: always()
+        run: rm -rf .runtime/android-signing .runtime/market-network.json
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              dist/android/OpenBill-Android-arm64.apk \
+              dist/android/OpenBill-Android-arm64.apk.sha256 \
+              --clobber
+          else
+            ARGS=(
+              "$TAG"
+              --title "OpenBill $TAG"
+              --notes "$(cat .runtime/release-notes.md)"
+              --generate-notes
+              --verify-tag
+            )
+            if [ "$PRERELEASE" = "true" ]; then
+              ARGS+=(--prerelease)
+            fi
+            gh release create "${ARGS[@]}" \
+              dist/android/OpenBill-Android-arm64.apk \
+              dist/android/OpenBill-Android-arm64.apk.sha256
+          fi
